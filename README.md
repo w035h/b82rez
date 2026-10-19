@@ -1,6 +1,6 @@
 # 🔋 Thuisbatterij Analyse – Home Assistant custom integration
 
-Deze integration haalt de historie van je **P1-meter (DSMR)** en je **omvormer/zonnepanelen** op uit de Home Assistant database (recorder long-term statistics) en simuleert jaarlijks wat een thuisbatterij van 0,5 t/m 20 kWh zou hebben bespaard. Je krijgt sensoren voor de aanbevolen capaciteit, jaarlijkse besparing, autarkie en terugverdientijd, plus een automatisch rapport met advies over je zonnepaneel-installatie.
+Deze integration haalt de historie van je **P1-meter (DSMR)** en je **omvorker/zonnepanelen** op uit de Home Assistant database (recorder long-term statistics) en simuleert jaarlijks wat een thuisbatterij van 0,5 t/m 20 kWh zou hebben bespaard. Je krijgt sensoren voor de aanbevolen capaciteit, jaarlijkse besparing, autarkie en terugverdientijd, plus een automatisch rapport met advies over je zonnepaneel-installatie.
 
 ## Installatie
 
@@ -28,19 +28,48 @@ Deze integration haalt de historie van je **P1-meter (DSMR)** en je **omvormer/z
 | `battery_max_power_kw` | Max. laad/ontlaadvermogen (kW) | `3.0` |
 | `max_capacity` | Maximaal te simuleren capaciteit (kWh) | `20` |
 
-> **Tip:** vind je entity's via Developer Tools → States. Kies een **kWh-totaalteller** (total_increasing), geen vermogenssensor (W) of een Energy-dashboard-helper.
+> **Tip:** vind je entity's via Developer Tools → States. Kies een **kWh-totaalteller** (total_increasing), geen vermogenssensor (W) of een Energy-dashboard-helper. Gebruik consistent **één** P1-bron voor import én export (niet twee verschillende gateways door elkaar, anders kloppen de verschillen niet).
 
 ## Sensoren
 
-- `sensor.aanbevolen_batterijcapaciteit` – aanbevolen maat (kWh)
-- `sensor.jaarlijkse_besparing_batterij` – jaarlijkse besparing (€), met `report_markdown` als attribuut
-- `sensor.jaarlijks_bespaarde_energie` – bespaarde energie (kWh/jaar)
+- `sensor.aanbevolen_batterijcapaciteit` – aanbevolen maat (kWh), met `max_useful_kwh` en `panel_advice` als attributen
+- `sensor.jaarlijkse_besparing_batterij` – netto jaarlijkse besparing (€), met `report_markdown` als attribuut
+- `sensor.jaarlijks_bespaarde_energie` – vermeden afname (kWh/jaar)
 - `sensor.autarkie_met_batterij` – autarkie (%)
 - `sensor.terugverdientijd_batterij` – terugverdientijd (jaren)
 
 ## Dashboard-config (Lovelace)
 
 ```yaml
+type: vertical-stack
+cards:
+  - type: markdown
+    title: Thuisbatterij Analyse
+    content: >
+      {{ state_attr('sensor.jaarlijkse_besparing_batterij', 'report_markdown') }}
+  - type: horizontal-stack
+    cards:
+      - type: gauge
+        name: Aanbevolen maat
+        entity: sensor.aanbevolen_batterijcapaciteit
+        min: 0
+        max: 20
+        severity:
+          green: 5
+          yellow: 10
+          red: 15
+      - type: gauge
+        name: Autarkie
+        entity: sensor.autarkie_met_batterij
+        min: 0
+        max: 100
+  - type: entities
+    title: Businesscase
+    entities:
+      - sensor.jaarlijkse_besparing_batterij
+      - sensor.jaarlijks_bespaarde_energie
+      - sensor.terugverdientijd_batterij
+      - sensor.aanbevolen_batterijcapaciteit
 ```
 
 ## Automatisering (wekelijkse herberekening)
@@ -61,13 +90,14 @@ action:
 mode: single
 ```
 
-## Hoe de analyse werkt
+## Hoe de analyse werkt (v2)
 
-1. **Data:** uurlijkse kWh uit de recorder long-term statistics van verbruik, teruglevering en (optioneel) opwek — max. 365 dagen terug.
+1. **Data:** cumulatieve kWh-meterstanden uit de recorder long-term statistics (max. 365 dagen). Het verbruik per uur wordt berekend uit het verschil tussen opeenvolgende standen; teruglopende standen (sensorresets/overflows, zoals een apparaatsensor die naar duizenden kWh springt) worden genegeerd en gerapporteerd als datakwaliteit-waarschuwing in het rapport.
 2. **Simulatie:** voor elke capaciteit van 0,5 t/m het opgegeven maximum (stap 0,5 kWh) wordt uur voor uur nagebootst: de batterij laadt uit teruglevering (beperkt door vermogen en capaciteit, met éénrichtingsrendement √η) en ontlaadt tegen verbruik uit het net.
-3. **Businesscase:** besparing = vermeden afname × stroomprijs; investering = vaste kosten + prijs per kWh; terugverdientijd = investering / jaarbesparing (geëxtrapoleerd naar een heel jaar).
-4. **Aanbeveling:** de maat met de kortste terugverdientijd, met inzicht in de marginale opbrengst per extra kWh.
-5. **Paneeladvies:** op basis van de verhouding opwek/verbruik/teruglevering wordt aangegeven of uitbreiden van de panelen zinvol is of dat de batterij de teruglevering juist opvangt.
+3. **Businesscase:** netto besparing = vermeden afname × stroomprijs − geladen kWh × teruglevertarief (gemiste terugleververgoeding). Terugverdientijd = investering / netto jaarbesparing.
+4. **Aanbeveling:** de maat met de kortste terugverdientijd, plus de *maximale zinvolle capaciteit* (de grens waar een extra 0,5 kWh nog ≥ 25 kWh/jaar oplevert — daarboven koop je maat die je niet benut).
+5. **Seizoensanalyse:** winter- vs. zomersplit van verbruik, teruglevering en opwek, zodat je ziet in welk seizoen de batterij zijn rendement haalt.
+6. **Paneeladvies:** op basis van de verhouding opwek/verbruik/teruglevering wordt aangegeven of uitbreiden van de panelen zinvol is of dat de batterij de teruglevering juist opvangt, inclusief de tip om verbruik (wasmachine, droger, airco) naar zonnige uren te schuiven.
 
 ### Beperkingen
 
