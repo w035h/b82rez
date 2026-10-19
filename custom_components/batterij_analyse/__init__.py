@@ -571,7 +571,6 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         )
 
     # --- rapport (markdown) -----------------------------------------------
-    # --- rapport (markdown) -----------------------------------------------
     table_rows = "\n".join(
         f"| {r['capacity_kwh']} | {r['yearly_saved_kwh']:.0f} | {r['autarkie_pct']} | "
         f"{r['investment_eur']:.0f} | {r['yearly_savings_eur']:.0f} | "
