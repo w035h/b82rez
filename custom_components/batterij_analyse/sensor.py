@@ -10,13 +10,20 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CURRENCY_EURO, ENERGY_KILO_WATT_HOUR, PERCENTAGE, UnitOfTime
+from homeassistant.const import (
+    CURRENCY_EURO,
+    PERCENTAGE,
+    UnitOfEnergy,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import ATTR_RESULT, EVENT_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
+
+ENTITY_IMPORT = "homeassistant.const"
 
 
 async def async_setup_entry(
@@ -32,7 +39,7 @@ async def async_setup_entry(
             entry,
             "recommended_kwh",
             "Aanbevolen batterijcapaciteit",
-            ENERGY_KILO_WATT_HOUR,
+            UnitOfEnergy.KILO_WATT_HOUR,
             "battery_capacity",
             1,
         ),
@@ -50,7 +57,7 @@ async def async_setup_entry(
             entry,
             "yearly_saved_kwh",
             "Jaarlijks bespaarde energie",
-            ENERGY_KILO_WATT_HOUR,
+            UnitOfEnergy.KILO_WATT_HOUR,
             "saved_energy",
             0,
         ),
@@ -86,6 +93,7 @@ class AnalyseSensor(SensorEntity):
         self._store = store
         self._key = key
         self._entry = entry
+        self._unit = unit
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = name
         self._attr_native_unit_of_measurement = unit
@@ -120,22 +128,26 @@ class AnalyseSensor(SensorEntity):
                 "period_start": result.get("period_start"),
                 "period_end": result.get("period_end"),
                 "days_analysed": result.get("days_analysed"),
+                "max_useful_kwh": result.get("max_useful_kwh"),
+                "seasonal": result.get("seasonal"),
+                "data_quality": result.get("data_quality"),
                 "report_markdown": result.get("report_markdown"),
             }
         elif self._key == "recommended_kwh":
             self._attr_extra_state_attributes = {
                 "panel_advice": result.get("panel_advice"),
+                "max_useful_kwh": result.get("max_useful_kwh"),
                 "simulation": result.get("simulation"),
             }
 
     @property
     def device_class(self):
-        if self._attr_native_unit_of_measurement == ENERGY_KILO_WATT_HOUR:
+        if self._unit == UnitOfEnergy.KILO_WATT_HOUR:
             return SensorDeviceClass.ENERGY
         return None
 
     @property
     def state_class(self):
-        if self._attr_native_unit_of_measurement in (ENERGY_KILO_WATT_HOUR, CURRENCY_EURO, PERCENTAGE):
+        if self._unit in (UnitOfEnergy.KILO_WATT_HOUR, CURRENCY_EURO, PERCENTAGE):
             return SensorStateClass.MEASUREMENT
         return None
