@@ -35,6 +35,8 @@ PLATFORMS = ["sensor"]
 SERVICE_START = "start"
 
 MAX_HISTORY_DAYS = 365
+MIN_ANALYSIS_DAYS = 14
+MARGINAL_KWH_THRESHOLD = 25.0
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -64,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         result = await async_run_analysis(hass, target["entry"])
         target[ATTR_RESULT] = result
         _LOGGER.info(
-            "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, besparing €%.0f/jaar",
+            "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, netto besparing €%.0f/jaar",
             result["recommended_kwh"],
             result["yearly_savings"],
         )
@@ -92,8 +94,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     """Haal uurlijkse kWh uit de recorder long-term statistics.
 
+    De statistics-tabel bevat CUMULATIEVE meterstanden (sum) per uur.
+    Het verbruik per uur is het verschil tussen opeenvolgende standen.
+    Negatieve verschillen (meterreset of vervuilde data) worden op 0 gezet
+    en geteld als kwaliteitswaarschuwing.
+
     Retourneert: (lijst met per uur (ts, import, export, solar),
-    tijdstip eerste uur, tijdstip laatste uur)
+    tijdstip eerste uur, tijdstip laatste uur, kwaliteitsdict)
     """
     from homeassistant.components.recorder import get_instance
     from homeassistant.components.recorder.db_schema import Statistics, StatisticsMeta
@@ -101,7 +108,7 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
 
     ids = [s for s in statistic_ids if s]
     if not ids:
-        return [], None, None
+        return [], None, None, {"warnings": ["Geen entity's geconfigureerd."]}
 
     instance = get_instance(hass)
     session = instance.get_session()
@@ -113,20 +120,26 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
         ).all()
         id_to_name = {row[0]: row[1] for row in meta_rows}
         if not id_to_name:
-            return [], None, None
+            return [], None, None, {
+                "warnings": [
+                    "Geen statistieken gevonden voor de gekozen entity's. "
+                    "Controleer of het kWh-meterstanden zijn "
+                    "(state_class: total_increasing)."
+                ]
+            }
         stat_rows = session.execute(
             select(
                 Statistics.metadata_id,
                 Statistics.start,
                 Statistics.sum,
             ).where(Statistics.metadata_id.in_(id_to_name))
+            .order_by(Statistics.start)
         ).all()
     finally:
         session.close()
 
+    # Cumulatieve standen per entity, op tijdstip
     raw: dict[str, dict[float, float]] = {name: {} for name in ids}
-    first_ts = None
-    last_ts = None
     for meta_id, start_dt, sum_val in stat_rows:
         name = id_to_name.get(meta_id)
         if name is None or sum_val is None:
@@ -136,36 +149,76 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
         except (AttributeError, ValueError, OSError):
             continue
         raw[name][ts] = float(sum_val)
-        if first_ts is None or ts < first_ts:
-            first_ts = ts
-        if last_ts is None or ts > last_ts:
-            last_ts = ts
 
-    cutoff = None
-    if first_ts is not None and last_ts is not None:
-        span_days = (last_ts - first_ts) / 86400
-        if span_days > MAX_HISTORY_DAYS:
-            cutoff = last_ts - MAX_HISTORY_DAYS * 86400
+    all_ts = sorted({ts for name in ids for ts in raw[name]})
+    if not all_ts:
+        return [], None, None, {"warnings": ["Geen uurstatistieken beschikbaar."]}
+    first_ts, last_ts = all_ts[0], all_ts[-1]
 
-    all_ts = sorted(
-        {
-            ts
-            for name in ids
-            for ts in raw[name]
-            if cutoff is None or ts >= cutoff
-        }
-    )
+    # Beperk tot de meest recente 365 dagen
+    cutoff = last_ts - MAX_HISTORY_DAYS * 86400
+    all_ts = [ts for ts in all_ts if ts >= cutoff]
+    first_ts = all_ts[0]
+
+    warnings = []
+    deltas: dict[str, dict[float, float]] = {}
+    for name in ids:
+        series = raw[name]
+        prev_sum = None
+        prev_ts = None
+        d = {}
+        resets = 0
+        missing = 0
+        for ts in all_ts:
+            s = series.get(ts)
+            if s is None:
+                missing += 1
+                continue
+            if prev_sum is not None:
+                delta = s - prev_sum
+                gap_hours = (ts - prev_ts) / 3600
+                if delta < 0:
+                    # Meterreset of vervuilde sensorstand
+                    resets += 1
+                    delta = 0.0
+                d[ts] = max(0.0, delta) / gap_hours * 1.0 if gap_hours > 0 else 0.0
+            prev_sum = s
+            prev_ts = ts
+        deltas[name] = d
+        if resets > 5:
+            warnings.append(
+                f"Entity {name}: {resets} x een teruglopende meterstand gevonden "
+                "(sensorreset of vervuilde data). Deze uren zijn genegeerd — "
+                "controleer deze sensor, bijv. op een overflow."
+            )
+        if missing > len(all_ts) * 0.3:
+            warnings.append(
+                f"Entity {name}: maar {100 - int(100*missing/len(all_ts))}% van de uren "
+                "heeft data. Overweeg een consistente meterbron (één P1-poort)."
+            )
+    if len(all_ts) < MIN_ANALYSIS_DAYS * 24:
+        warnings.append(
+            f"Minder dan {MIN_ANALYSIS_DAYS} dagen historie; het advies is nu "
+            "onbetrouwbaar omdat seizoensverschillen ontbreken."
+        )
 
     hours = []
     for ts in all_ts:
-        imp = raw.get(statistic_ids[0], {}).get(ts, 0.0) if statistic_ids[0] else 0.0
-        exp = raw.get(statistic_ids[1], {}).get(ts, 0.0) if len(statistic_ids) > 1 and statistic_ids[1] else 0.0
-        sol = raw.get(statistic_ids[2], {}).get(ts, 0.0) if len(statistic_ids) > 2 and statistic_ids[2] else 0.0
+        imp = deltas.get(ids[0], {}).get(ts, 0.0) if len(ids) > 0 and ids[0] else 0.0
+        exp = deltas.get(ids[1], {}).get(ts, 0.0) if len(ids) > 1 and ids[1] else 0.0
+        sol = deltas.get(ids[2], {}).get(ts, 0.0) if len(ids) > 2 and ids[2] else 0.0
         hours.append((ts, imp, exp, sol))
 
-    first = all_ts[0] if all_ts else None
-    last = all_ts[-1] if all_ts else None
-    return hours, first, last
+    quality = {
+        "warnings": warnings,
+        "hours_found": len(all_ts),
+    }
+    return hours, first_ts, last_ts, quality
+
+
+# ---------------------------------------------------------------------------
+# Analyse
+# ---------------------------------------------------------------------------
 
 
 async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
@@ -183,7 +236,7 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     max_power = float(data.get(CONF_BATTERY_MAX_POWER_KW, 3.0))
     max_capacity = float(data.get(CONF_MAX_CAPACITY, DEFAULT_MAX_CAPACITY))
 
-    hours, first_ts, last_ts = await hass.async_add_executor_job(
+    hours, first_ts, last_ts, quality = await hass.async_add_executor_job(
         _fetch_hourly_kwh, hass, [import_ent, export_ent, solar_ent or ""]
     )
     if not hours or first_ts is None:
@@ -224,8 +277,9 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         yearly_charged = charged * scale
         autarkie = 100.0 * saved / total_import if total_import else 0.0
         invest = cost_fixed + cost_kwh * cap
-        # Besparing = vermeden afname tegen de stroomprijs.
-        yearly_savings = yearly_saved * price_import
+        # Netto besparing: vermeden afname minus gemiste terugleververgoeding
+        # over de hoeveelheid die uit eigen teruglevering is geladen.
+        yearly_savings = yearly_saved * price_import - yearly_charged * price_export
         payback = invest / yearly_savings if yearly_savings > 0 else None
         marginal = yearly_saved - prev_yearly_saved
         results.append(
@@ -243,7 +297,8 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         prev_yearly_saved = yearly_saved
         cap += step
 
-    # --- aanbeveling: maat met de kortste terugverdientijd -----------------
+    # --- aanbevelingen ------------------------------------------------------
+    # 1) Beste terugverdientijd
     recommended = min(
         results,
         key=lambda r: (
@@ -251,6 +306,30 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
             r["payback_years"] if r["payback_years"] else 0,
         ),
     )
+    # 2) Maximale zinvolle capaciteit: waar extra kWh nog >= 25 kWh/jaar oplevert
+    max_useful = max(
+        (r["capacity_kwh"] for r in results if r["marginal_yearly_kwh"] >= MARGINAL_KWH_THRESHOLD),
+        default=None,
+    )
+
+    # --- seizoensanalyse -----------------------------------------------------
+    months: dict[str, dict[str, float]] = {}
+    for ts, imp, exp, sol in hours:
+        key = datetime.fromtimestamp(ts).strftime("%Y-%m")
+        m = months.setdefault(key, {"import": 0.0, "export": 0.0, "solar": 0.0})
+        m["import"] += imp
+        m["export"] += exp
+        m["solar"] += sol
+    seasonal = {
+        "winter": {"import": 0.0, "export": 0.0, "solar": 0.0},
+        "zomer": {"import": 0.0, "export": 0.0, "solar": 0.0},
+    }
+    for key, m in months.items():
+        month = int(key.split("-")[1])
+        season = "winter" if month in (11, 12, 1, 2) else ("zomer" if month in (5, 6, 7, 8) else None)
+        if season:
+            for k in seasonal[season]:
+                seasonal[season][k] += m[k]
 
     # --- advies zonnepanelen ----------------------------------------------
     avg_daily_solar = total_solar / days
@@ -274,9 +353,10 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         panel_advice.append(
             f"{export_ratio*100:.0f}% van je opwek lever je terug aan het net. "
             "Uitbreiden van de panelen heeft dan weinig zin zonder (grotere) batterij; "
-            "de batterij vangt de teruglevering op."
+            "de batterij vangt de teruglevering op. Verbruiksverschuiving naar "
+            "zonnige uren (wasmachine, droger, airco) vergroot het rendement extra."
         )
-    if avg_daily_export > recommended["capacity_kwh"] * 0.8:
+    if avg_daily_export > (recommended["capacity_kwh"] or 0) * 0.8:
         panel_advice.append(
             "Je dagelijkse teruglevering is groot genoeg om de aanbevolen batterij "
             "volledig te laden: er is geen noodzaak om de omvormer/panelen aan te passen."
@@ -294,20 +374,33 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         f"{r['payback_years'] if r['payback_years'] else '—'} |"
         for r in results
     )
+    warning_block = ""
+    if quality.get("warnings"):
+        warning_block = (
+            "## ⚠️ Datakwaliteit\n\n"
+            + "\n".join(f"- {w}" for w in quality["warnings"])
+            + "\n\n"
+        )
+    max_useful_txt = f"{max_useful} kWh" if max_useful else "geen extra capaciteit levert nog iets op"
     report = (
         f"# 🔋 Thuisbatterij Analyse\n\n"
         f"**Geanalyseerde periode:** {days:.0f} dagen "
         f"({datetime.fromtimestamp(first_ts).strftime('%d-%m-%Y')} t/m "
         f"{datetime.fromtimestamp(last_ts).strftime('%d-%m-%Y')})\n\n"
+        f"{warning_block}"
         f"| Kenmerk | Waarde |\n|---|---|\n"
         f"| Gemiddeld verbruik uit net | {avg_daily_import:.1f} kWh/dag |\n"
         f"| Gemiddelde teruglevering | {avg_daily_export:.1f} kWh/dag |\n"
         f"| Gemiddelde zonne-opwek | {avg_daily_solar:.1f} kWh/dag |\n"
         f"| Zelfgebruik zonder batterij | {100-export_ratio*100:.0f}% |\n\n"
         f"## Aanbeveling\n"
-        f"**Aanbevolen capaciteit: {recommended['capacity_kwh']} kWh**\n\n"
-        f"- Jaarlijks bespaard: **{recommended['yearly_saved_kwh']:.0f} kWh** "
-        f"(≈ €{recommended['yearly_savings_eur']:.0f}/jaar bij €{price_import:.2f}/kWh)\n"
+        f"**Aanbevolen capaciteit: {recommended['capacity_kwh']} kWh** "
+        f"(beste terugverdientijd)\n\n"
+        f"- Maximale zinvolle capaciteit: **{max_useful_txt}** "
+        f"(boven deze maat levert extra kWh minder dan {MARGINAL_KWH_THRESHOLD:.0f} kWh/jaar op)\n"
+        f"- Jaarlijks vermeden afname: **{recommended['yearly_saved_kwh']:.0f} kWh**\n"
+        f"- Netto jaarlijkse besparing: **€{recommended['yearly_savings_eur']:.0f}** "
+        f"(incl. gemiste terugleververgoeding)\n"
         f"- Autarkie daarmee: **{recommended['autarkie_pct']}%**\n"
         f"- Investeringsindicatie: **€{recommended['investment_eur']:.0f}** "
         f"(bij €{cost_kwh:.0f}/kWh + €{cost_fixed:.0f} vast)\n"
@@ -315,8 +408,8 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         f"## Advies zonnepanelen\n"
         + "\n".join(f"- {line}" for line in panel_advice)
         + "\n\n## Simulatie per capaciteit\n\n"
-        f"| Capaciteit (kWh) | Bespaard (kWh/jr) | Autarkie % | Investeren (€) | "
-        f"Besparing (€/jr) | Terugverdient (jr) |\n|---|---|---|---|---|---|\n"
+        f"| Capaciteit (kWh) | Vermeden afname (kWh/jr) | Autarkie % | Investeren (€) | "
+        f"Netto besparing (€/jr) | Terugverdient (jr) |\n|---|---|---|---|---|---|\n"
         f"{table_rows}\n\n"
         f"_Aannames: round-trip rendement {efficiency*100:.0f}%, max {max_power:.1f} kW "
         f"laad/ontlaadvermogen, stroomprijs €{price_import:.2f}/kWh en "
@@ -333,11 +426,14 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "avg_daily_solar_kwh": round(avg_daily_solar, 2),
         "self_consumption_pct": round(100 - export_ratio * 100, 1) if total_solar else None,
         "recommended_kwh": recommended["capacity_kwh"],
+        "max_useful_kwh": max_useful,
         "yearly_saved_kwh": recommended["yearly_saved_kwh"],
         "yearly_savings": recommended["yearly_savings_eur"],
         "autarkie_pct": recommended["autarkie_pct"],
         "payback_years": recommended["payback_years"],
         "investment_eur": recommended["investment_eur"],
+        "seasonal": {k: {kk: round(vv, 1) for kk, vv in v.items()} for k, v in seasonal.items()},
+        "data_quality": quality,
         "simulation": results,
         "panel_advice": panel_advice,
         "report_markdown": report,
