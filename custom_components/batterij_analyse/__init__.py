@@ -99,6 +99,40 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Los entity-id's op naar recorder-statistic-id's.
+
+    Home Assistant kan statistieken opslaan onder een afwijkende ID
+    (bijv. 'sensor.xxx_2' na een meterreset). We zoeken daarom eerst op
+    de exacte ID, daarna op de prefix (sensor.xxx_2, sensor.xxx_3, ...).
+
+    Retourneert: (entity_id -> statistic_id, niet-gevonden entity's)
+    """
+    from homeassistant.components.recorder import get_instance
+    from homeassistant.components.recorder.statistics import get_statistic_ids
+
+    instance = get_instance(hass)
+    wanted = [e for e in entity_ids if e]
+    if not wanted:
+        return {}, []
+
+    with instance.get_session() as session:
+        all_stats = get_statistic_ids(hass, session=session) or {}
+
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    for eid in wanted:
+        if eid in all_stats:
+            resolved[eid] = eid
+            continue
+        candidates = sorted(k for k in all_stats if k.startswith(f"{eid}_"))
+        if candidates:
+            resolved[eid] = candidates[-1]
+        else:
+            missing.append(eid)
+    return resolved, missing
+
+
 def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     """Haal uurlijkse kWh uit de recorder long-term statistics.
 
@@ -114,9 +148,21 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     from homeassistant.components.recorder.db_schema import Statistics, StatisticsMeta
     from sqlalchemy import select
 
-    ids = [s for s in statistic_ids if s]
-    if not ids:
-        return [], None, None, {"warnings": ["Geen entity's geconfigureerd."]}
+    # 1) Entity-id's omzetten naar echte statistic-id's (incl. _2-varianten)
+    resolved, missing_ents = _resolve_statistic_ids(hass, statistic_ids)
+    if not resolved:
+        return [], None, None, {
+            "warnings": [],
+            "missing_entities": missing_ents,
+            "error": (
+                "Geen statistieken gevonden voor: " + ", ".join(missing_ents)
+                + ". Open Developer Tools -> Statistics om te controleren of deze "
+                "entity's daar voorkomen. Alleen kWh-totaaltellers "
+                "(state_class: total_increasing of total) bouwen historie op."
+            ),
+        }
+
+    ids = list(resolved.values())
 
     instance = get_instance(hass)
     session = instance.get_session()
@@ -129,11 +175,9 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
         id_to_name = {row[0]: row[1] for row in meta_rows}
         if not id_to_name:
             return [], None, None, {
-                "warnings": [
-                    "Geen statistieken gevonden voor de gekozen entity's. "
-                    "Controleer of het kWh-meterstanden zijn "
-                    "(state_class: total_increasing)."
-                ]
+                "warnings": [],
+                "missing_entities": missing_ents,
+                "error": "Geen statistics-meta gevonden voor de gekozen entity's.",
             }
         stat_rows = session.execute(
             select(
@@ -146,7 +190,7 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     finally:
         session.close()
 
-    # Cumulatieve standen per entity, op tijdstip
+    # Cumulatieve standen per statistic-id, op tijdstip
     raw: dict[str, dict[float, float]] = {name: {} for name in ids}
     for meta_id, start_dt, sum_val in stat_rows:
         name = id_to_name.get(meta_id)
@@ -160,7 +204,11 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
 
     all_ts = sorted({ts for name in ids for ts in raw[name]})
     if not all_ts:
-        return [], None, None, {"warnings": ["Geen uurstatistieken beschikbaar."]}
+        return [], None, None, {
+            "warnings": [],
+            "missing_entities": missing_ents,
+            "error": "De gekozen entity's hebben nog geen uurstatistieken opgebouwd.",
+        }
     first_ts, last_ts = all_ts[0], all_ts[-1]
 
     # Beperk tot de meest recente 365 dagen
@@ -169,9 +217,13 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     first_ts = all_ts[0]
 
     warnings = []
+    if missing_ents:
+        warnings.append(
+            "Geen statistieken voor (genegeerd): " + ", ".join(missing_ents)
+        )
     deltas: dict[str, dict[float, float]] = {}
-    for name in ids:
-        series = raw[name]
+    for eid, sid in resolved.items():
+        series = raw.get(sid, {})
         prev_sum = None
         prev_ts = None
         d = {}
@@ -188,21 +240,20 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
                     # Meterreset of vervuilde sensorstand
                     resets += 1
                     delta = 0.0
-                gap_hours = (ts - prev_ts) / 3600 if prev_ts else 1.0
-                d[ts] = max(0.0, delta) if gap_hours > 0 else 0.0
+                d[ts] = max(0.0, delta)
             prev_sum = s
             prev_ts = ts
-        deltas[name] = d
+        deltas[eid] = d
         if resets > 5:
             warnings.append(
-                f"Entity {name}: {resets} x een teruglopende meterstand gevonden "
+                f"Entity {eid}: {resets} x een teruglopende meterstand gevonden "
                 "(sensorreset of vervuilde data). Deze uren zijn genegeerd — "
                 "controleer deze sensor, bijv. op een overflow."
             )
         if missing > len(all_ts) * 0.3:
             warnings.append(
-                f"Entity {name}: maar {100 - int(100*missing/len(all_ts))}% van de uren "
-                "heeft data. Overweeg een consistente meterbron (één P1-poort)."
+                f"Entity {eid}: {100 - int(100*missing/len(all_ts))}% van de uren "
+                "heeft data; de rest is leeg. Overweeg een consistente meterbron."
             )
     if len(all_ts) < MIN_ANALYSIS_DAYS * 24:
         warnings.append(
@@ -210,16 +261,18 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
             "onbetrouwbaar omdat seizoensverschillen ontbreken."
         )
 
+    ordered_ents = [e for e in statistic_ids if e]
     hours = []
     for ts in all_ts:
-        imp = deltas.get(ids[0], {}).get(ts, 0.0) if len(ids) > 0 and ids[0] else 0.0
-        exp = deltas.get(ids[1], {}).get(ts, 0.0) if len(ids) > 1 and ids[1] else 0.0
-        sol = deltas.get(ids[2], {}).get(ts, 0.0) if len(ids) > 2 and ids[2] else 0.0
+        imp = deltas.get(ordered_ents[0], {}).get(ts, 0.0) if len(ordered_ents) > 0 else 0.0
+        exp = deltas.get(ordered_ents[1], {}).get(ts, 0.0) if len(ordered_ents) > 1 else 0.0
+        sol = deltas.get(ordered_ents[2], {}).get(ts, 0.0) if len(ordered_ents) > 2 else 0.0
         hours.append((ts, imp, exp, sol))
 
     quality = {
         "warnings": warnings,
         "hours_found": len(all_ts),
+        "missing_entities": missing_ents,
     }
     return hours, first_ts, last_ts, quality
 
@@ -248,10 +301,22 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         _fetch_hourly_kwh, hass, [import_ent, export_ent, solar_ent or ""]
     )
     if not hours or first_ts is None:
-        raise HomeAssistantError(
-            "Geen uurstatistieken gevonden. Controleer of de gekozen entity's "
-            "kWh-meterstanden zijn (state_class: total_increasing)."
+        detail = quality.get("error") if quality else None
+        missing = quality.get("missing_entities") if quality else []
+        msg = "Geen uurstatistieken gevonden."
+        if missing:
+            msg += f" Geen statistieken voor: {', '.join(missing)}."
+        msg += (
+            " Controleer of de gekozen entity's kWh-totaaltellers zijn "
+            "(state_class: total_increasing of total, device_class: energy) en "
+            "of ze voorkomen onder Developer Tools -> Statistics. "
+            "Vermogenssensoren (W), 'vandaag'-sensoren zonder totale-meter of "
+            "net aangemaakte helpers zonder historie bouwen nog geen "
+            "uurstatistieken op."
         )
+        if detail:
+            msg += f" Detail: {detail}"
+        raise HomeAssistantError(msg)
 
     days = max(1.0, (last_ts - first_ts) / 86400)
     scale = 365.0 / days
@@ -306,7 +371,6 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         cap += step
 
     # --- aanbevelingen ------------------------------------------------------
-    # 1) Beste terugverdientijd
     recommended = min(
         results,
         key=lambda r: (
@@ -314,7 +378,7 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
             r["payback_years"] if r["payback_years"] else 0,
         ),
     )
-    # 2) Maximale zinvolle capaciteit: waar extra kWh nog >= 25 kWh/jaar oplevert
+    # Maximale zinvolle capaciteit: waar extra kWh nog >= 25 kWh/jaar oplevert
     max_useful = max(
         (r["capacity_kwh"] for r in results if r["marginal_yearly_kwh"] >= MARGINAL_KWH_THRESHOLD),
         default=None,
