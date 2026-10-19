@@ -5,6 +5,7 @@ via de config flow."""
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 from datetime import datetime
@@ -43,6 +44,9 @@ SERVICE_START = "start"
 MAX_HISTORY_DAYS = 365
 MIN_ANALYSIS_DAYS = 14
 MARGINAL_KWH_THRESHOLD = 25.0
+# Aanbevolen maat: de grootste capaciteit waarvan de terugverdientijd
+# maximaal 15% boven de best haalbare terugverdientijd ligt.
+PAYBACK_TOLERANCE = 1.15
 
 
 def _as_list(value) -> list[str]:
@@ -128,7 +132,14 @@ async def async_start_analysis(hass: HomeAssistant, entry_id: str | None = None)
     if target is None:
         raise HomeAssistantError("Thuisbatterij Analyse is nog niet geconfigureerd.")
 
-    result = await async_run_analysis(hass, target["entry"])
+    lock: asyncio.Lock = target["lock"]
+    if lock.locked():
+        raise HomeAssistantError(
+            "Er draait al een Thuisbatterij Analyse voor deze configuratie; "
+            "wacht tot die klaar is."
+        )
+    async with lock:
+        result = await async_run_analysis(hass, target["entry"])
     target[ATTR_RESULT] = result
     _LOGGER.info(
         "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, netto besparing €%.0f/jaar",
@@ -144,6 +155,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "entry": entry,
         ATTR_RESULT: None,
+        "lock": asyncio.Lock(),
     }
     # Voorkom blokkerende import in de event loop: laad het platform
     # vooraf in een executor-thread (aanbevolen door HA-richtlijnen).
@@ -462,13 +474,24 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         cap += step
 
     # --- aanbevelingen ------------------------------------------------------
-    recommended = min(
-        results,
-        key=lambda r: (
-            r["payback_years"] is None,
-            r["payback_years"] if r["payback_years"] else 0,
-        ),
-    )
+    # Beste waarde-voor-geld: de grootste capaciteit waarvan de
+    # terugverdientijd binnen PAYBACK_TOLERANCE van de best haalbare ligt.
+    # Zo kiest de vaste kostencomponent niet structureel de kleinste batterij.
+    payback_results = [r for r in results if r["payback_years"] is not None]
+    if payback_results:
+        best_payback = min(r["payback_years"] for r in payback_results)
+        recommended = max(
+            (
+                r
+                for r in payback_results
+                if r["payback_years"] <= best_payback * PAYBACK_TOLERANCE
+            ),
+            key=lambda r: r["capacity_kwh"],
+        )
+    else:
+        # Geen enkele combinatie verdient zich terug (bijv. teruglevertarief
+        # hoger dan de stroomprijs): kies dan de kleinste capaciteit.
+        recommended = min(results, key=lambda r: r["capacity_kwh"])
     # Maximale zinvolle capaciteit: waar extra kWh nog >= 25 kWh/jaar oplevert
     max_useful = max(
         (r["capacity_kwh"] for r in results if r["marginal_yearly_kwh"] >= MARGINAL_KWH_THRESHOLD),
@@ -531,8 +554,8 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         )
 
     # --- rapport (markdown) -----------------------------------------------
-    table_rows = "
-".join(
+    # --- rapport (markdown) -----------------------------------------------
+    table_rows = "\n".join(
         f"| {r['capacity_kwh']} | {r['yearly_saved_kwh']:.0f} | {r['autarkie_pct']} | "
         f"{r['investment_eur']:.0f} | {r['yearly_savings_eur']:.0f} | "
         f"{r['payback_years'] if r['payback_years'] else '—'} |"
@@ -541,76 +564,41 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     warning_block = ""
     if quality.get("warnings"):
         warning_block = (
-            "## ⚠️ Datakwaliteit
-
-"
-            + "
-".join(f"- {w}" for w in quality["warnings"])
-            + "
-
-"
+            "## ⚠️ Datakwaliteit\n\n"
+            + "\n".join(f"- {w}" for w in quality["warnings"])
+            + "\n\n"
         )
     max_useful_txt = f"{max_useful} kWh" if max_useful else "geen extra capaciteit levert nog iets op"
     report = (
-        f"# 🔋 Thuisbatterij Analyse
-
-"
+        f"# 🔋 Thuisbatterij Analyse\n\n"
         f"**Geanalyseerde periode:** {days:.0f} dagen "
         f"({datetime.fromtimestamp(first_ts).strftime('%d-%m-%Y')} t/m "
-        f"{datetime.fromtimestamp(last_ts).strftime('%d-%m-%Y')})
-
-"
+        f"{datetime.fromtimestamp(last_ts).strftime('%d-%m-%Y')})\n\n"
         f"{warning_block}"
-        f"| Kenmerk | Waarde |
-|---|---|
-"
-        f"| Gemiddeld verbruik uit net | {avg_daily_import:.1f} kWh/dag |
-"
-        f"| Gemiddelde teruglevering | {avg_daily_export:.1f} kWh/dag |
-"
-        f"| Gemiddelde zonne-opwek | {avg_daily_solar:.1f} kWh/dag |
-"
-        f"| Zelfgebruik zonder batterij | {100-export_ratio*100:.0f}% |
-
-"
-        f"## Aanbeveling
-"
+        f"| Kenmerk | Waarde |\n|---|---|\n"
+        f"| Gemiddeld verbruik uit net | {avg_daily_import:.1f} kWh/dag |\n"
+        f"| Gemiddelde teruglevering | {avg_daily_export:.1f} kWh/dag |\n"
+        f"| Gemiddelde zonne-opwek | {avg_daily_solar:.1f} kWh/dag |\n"
+        f"| Zelfgebruik zonder batterij | {100-export_ratio*100:.0f}% |\n\n"
+        f"## Aanbeveling\n"
         f"**Aanbevolen capaciteit: {recommended['capacity_kwh']} kWh** "
-        f"(beste terugverdientijd)
-
-"
+        f"(grootste maat met een terugverdientijd binnen "
+        f"{(PAYBACK_TOLERANCE - 1) * 100:.0f}% van de best haalbare)\n\n"
         f"- Maximale zinvolle capaciteit: **{max_useful_txt}** "
-        f"(boven deze maat levert extra kWh minder dan {MARGINAL_KWH_THRESHOLD:.0f} kWh/jaar op)
-"
-        f"- Jaarlijks vermeden afname: **{recommended['yearly_saved_kwh']:.0f} kWh**
-"
+        f"(boven deze maat levert extra kWh minder dan {MARGINAL_KWH_THRESHOLD:.0f} kWh/jaar op)\n"
+        f"- Jaarlijks vermeden afname: **{recommended['yearly_saved_kwh']:.0f} kWh**\n"
         f"- Netto jaarlijkse besparing: **€{recommended['yearly_savings_eur']:.0f}** "
-        f"(incl. gemiste terugleververgoeding)
-"
-        f"- Autarkie daarmee: **{recommended['autarkie_pct']}%**
-"
+        f"(incl. gemiste terugleververgoeding)\n"
+        f"- Autarkie daarmee: **{recommended['autarkie_pct']}%**\n"
         f"- Investeringsindicatie: **€{recommended['investment_eur']:.0f}** "
-        f"(bij €{cost_kwh:.0f}/kWh + €{cost_fixed:.0f} vast)
-"
-        f"- Terugverdientijd: **{recommended['payback_years'] if recommended['payback_years'] else '—'} jaar**
-
-"
-        f"## Advies zonnepanelen
-"
-        + "
-".join(f"- {line}" for line in panel_advice)
-        + "
-
-## Simulatie per capaciteit
-
-"
+        f"(bij €{cost_kwh:.0f}/kWh + €{cost_fixed:.0f} vast)\n"
+        f"- Terugverdientijd: **{recommended['payback_years'] if recommended['payback_years'] else '—'} jaar**\n\n"
+        f"## Advies zonnepanelen\n"
+        + "\n".join(f"- {line}" for line in panel_advice)
+        + "\n\n## Simulatie per capaciteit\n\n"
         f"| Capaciteit (kWh) | Vermeden afname (kWh/jr) | Autarkie % | Investeren (€) | "
-        f"Netto besparing (€/jr) | Terugverdient (jr) |
-|---|---|---|---|---|---|
-"
-        f"{table_rows}
-
-"
+        f"Netto besparing (€/jr) | Terugverdient (jr) |\n|---|---|---|---|---|---|\n"
+        f"{table_rows}\n\n"
         f"_Aannames: round-trip rendement {efficiency*100:.0f}%, max {max_power:.1f} kW "
         f"laad/ontlaadvermogen, stroomprijs €{price_import:.2f}/kWh en "
         f"teruglevertarief €{price_export:.2f}/kWh. "

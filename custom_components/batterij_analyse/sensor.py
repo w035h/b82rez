@@ -7,17 +7,19 @@ import logging
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
-    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CURRENCY_EURO,
     PERCENTAGE,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     UnitOfEnergy,
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import ATTR_RESULT, DOMAIN, EVENT_UPDATED
 
@@ -81,7 +83,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class AnalyseSensor(SensorEntity):
+class AnalyseSensor(RestoreEntity, SensorEntity):
     """Sensor met de laatste analyseresultaten."""
 
     _attr_has_entity_name = True
@@ -107,6 +109,22 @@ class AnalyseSensor(SensorEntity):
             self.hass.bus.async_listen(EVENT_UPDATED, self._on_update)
         )
         self._update_from_store()
+        # Herstel de laatste waarde na een herstart, zodat de sensors
+        # niet leeg zijn tot de volgende analyse draait.
+        last_state = await self.async_get_last_state()
+        if (
+            last_state is not None
+            and self._attr_native_value is None
+            and last_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE)
+        ):
+            try:
+                self._attr_native_value = float(last_state.state)
+            except ValueError:
+                _LOGGER.debug(
+                    "Kon vorige waarde %s van %s niet herstellen",
+                    last_state.state,
+                    self.entity_id,
+                )
 
     @callback
     def _on_update(self, _event) -> None:
@@ -144,8 +162,3 @@ class AnalyseSensor(SensorEntity):
             return SensorDeviceClass.ENERGY
         return None
 
-    @property
-    def state_class(self):
-        if self._unit in (UnitOfEnergy.KILO_WATT_HOUR, CURRENCY_EURO, PERCENTAGE):
-            return SensorStateClass.MEASUREMENT
-        return None

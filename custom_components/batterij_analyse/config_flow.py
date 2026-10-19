@@ -157,6 +157,7 @@ class BatterijAnalyseConfigFlow(config_entries.ConfigFlow, domain="batterij_anal
     """Handle the config flow for Thuisbatterij Analyse."""
 
     VERSION = 2
+    SINGLE_INSTANCE_CLASS = True
 
     async def async_step_user(self, user_input=None):
         """Stap 1: entity's (automatisch voorgesteld) en parameters kiezen."""
