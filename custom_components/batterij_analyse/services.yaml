@@ -1,0 +1,15 @@
+start:
+  name: Start batterij-analyse
+  description: >-
+    Voert de volledige analyse opnieuw uit over de beschikbare historie
+    (max. 365 dagen) en werkt de sensoren en het rapport bij.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: >-
+        Optioneel: entry_id van de Thuisbatterij Analyse-configuratie.
+        Leeg laten bij één instantie.
+      example: "01J8X..."
+      required: false
+      selector:
+        text:

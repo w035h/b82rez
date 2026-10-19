@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Thuisbatterij Analyse",
+        "description": "Kies je energie-entity's (kWh-meterstanden!) en vul je tarieven in.",
+        "data": {
+          "entity_import": "Entity stroomverbruik uit het net (kWh, bijv. P1 meterstand verbruik)",
+          "entity_export": "Entity teruglevering aan het net (kWh, bijv. P1 meterstand teruglevering)",
+          "entity_solar": "Entity zonnepanelen productie (kWh, optioneel)",
+          "price_import": "Stroomprijs (€/kWh)",
+          "price_export": "Teruglevertarief (€/kWh)",
+          "battery_cost_kwh": "Batterijkosten per kWh geïnstalleerd (€/kWh)",
+          "battery_cost_fixed": "Vaste installatiekosten (€)",
+          "battery_efficiency": "Round-trip rendement batterij (%)",
+          "battery_max_power_kw": "Max laad/ontlaadvermogen (kW)",
+          "max_capacity": "Maximale te simuleren capaciteit (kWh)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Er is al een instantie geconfigureerd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Thuisbatterij Analyse instellingen",
+        "data": {
+          "entity_import": "Entity stroomverbruik uit het net (kWh)",
+          "entity_export": "Entity teruglevering aan het net (kWh)",
+          "entity_solar": "Entity zonnepanelen productie (kWh, optioneel)",
+          "price_import": "Stroomprijs (€/kWh)",
+          "price_export": "Teruglevertarief (€/kWh)",
+          "battery_cost_kwh": "Batterijkosten per kWh geïnstalleerd (€/kWh)",
+          "battery_cost_fixed": "Vaste installatiekosten (€)",
+          "battery_efficiency": "Round-trip rendement batterij (%)",
+          "battery_max_power_kw": "Max laad/ontlaadvermogen (kW)",
+          "max_capacity": "Maximale te simuleren capaciteit (kWh)"
+        }
+      }
+    }
+  }
+}

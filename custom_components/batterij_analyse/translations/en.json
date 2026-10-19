@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Home Battery Analysis",
+        "description": "Select your energy entities (kWh meter readings!) and enter your tariffs.",
+        "data": {
+          "entity_import": "Grid import energy entity (kWh, e.g. P1 consumption)",
+          "entity_export": "Grid export energy entity (kWh, e.g. P1 feed-in)",
+          "entity_solar": "Solar production energy entity (kWh, optional)",
+          "price_import": "Electricity price (€/kWh)",
+          "price_export": "Feed-in tariff (€/kWh)",
+          "battery_cost_kwh": "Battery cost per installed kWh (€/kWh)",
+          "battery_cost_fixed": "Fixed installation cost (€)",
+          "battery_efficiency": "Battery round-trip efficiency (%)",
+          "battery_max_power_kw": "Max charge/discharge power (kW)",
+          "max_capacity": "Maximum simulated capacity (kWh)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Home Battery Analysis settings",
+        "data": {
+          "entity_import": "Grid import energy entity (kWh)",
+          "entity_export": "Grid export energy entity (kWh)",
+          "entity_solar": "Solar production energy entity (kWh, optional)",
+          "price_import": "Electricity price (€/kWh)",
+          "price_export": "Feed-in tariff (€/kWh)",
+          "battery_cost_kwh": "Battery cost per installed kWh (€/kWh)",
+          "battery_cost_fixed": "Fixed installation cost (€)",
+          "battery_efficiency": "Battery round-trip efficiency (%)",
+          "battery_max_power_kw": "Max charge/discharge power (kW)",
+          "max_capacity": "Maximum simulated capacity (kWh)"
+        }
+      }
+    }
+  }
+}
