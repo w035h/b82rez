@@ -73,6 +73,48 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migreer oude config entries naar het nieuwe formaat.
+
+    v1 (losse entity-velden) -> v2 (lijsten per richting, multi-tarief).
+    Oude keys worden omgezet naar lijsten en daarna verwijderd, zodat
+    de code overal met de nieuwe keys kan werken.
+    """
+    if entry.version > 2:
+        # Nieuwer dan we ondersteunen: niet downgraden
+        return False
+
+    if entry.version == 1:
+        old = {**entry.data, **(entry.options or {})}
+        new = dict(old)
+
+        legacy_map = {
+            CONF_ENTITY_IMPORT: CONF_ENTITIES_IMPORT,
+            CONF_ENTITY_EXPORT: CONF_ENTITIES_EXPORT,
+            CONF_ENTITY_SOLAR: CONF_ENTITIES_SOLAR,
+        }
+        for old_key, new_key in legacy_map.items():
+            if old_key in new and new_key not in new:
+                value = new.pop(old_key)
+                if value:
+                    new[new_key] = [value] if isinstance(value, str) else list(value)
+                else:
+                    new[new_key] = []
+            else:
+                new.pop(old_key, None)
+
+        new.setdefault(CONF_ENTITIES_IMPORT, [])
+        new.setdefault(CONF_ENTITIES_EXPORT, [])
+        new.setdefault(CONF_ENTITIES_SOLAR, [])
+
+        hass.config_entries.async_update_entry(entry, data=new, version=2)
+        _LOGGER.info(
+            "Config entry gemigreerd van versie 1 naar 2 (multi-tarief formaat)"
+        )
+
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
     hass.data[DOMAIN][entry.entry_id] = {
@@ -121,55 +163,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migreer oude config entries naar het nieuwe formaat.
-
-    v1 (losse entity-velden) -> v2 (lijsten per richting, multi-tarief).
-    Oude keys worden omgezet naar lijsten en daarna verwijderd, zodat
-    de code overal met de nieuwe keys kan werken.
-    """
-    if entry.version > 2:
-        # Nieuwer dan we ondersteunen: niet downgraden
-        return False
-
-    if entry.version == 1:
-        old = {**entry.data, **(entry.options or {})}
-        new = dict(old)
-        changed = False
-
-        legacy_map = {
-            CONF_ENTITY_IMPORT: CONF_ENTITIES_IMPORT,
-            CONF_ENTITY_EXPORT: CONF_ENTITIES_EXPORT,
-            CONF_ENTITY_SOLAR: CONF_ENTITIES_SOLAR,
-        }
-        for old_key, new_key in legacy_map.items():
-            if old_key in new and new_key not in new:
-                value = new.pop(old_key)
-                if value:
-                    new[new_key] = [value] if isinstance(value, str) else list(value)
-                else:
-                    new[new_key] = []
-                changed = True
-            else:
-                new.pop(old_key, None)
-
-        # Zorg dat de nieuwe keys er sowieso zijn (geldige defaults: lege lijst
-        # wordt later in de options-flow door de detectie gevuld).
-        new.setdefault(CONF_ENTITIES_IMPORT, [])
-        new.setdefault(CONF_ENTITIES_EXPORT, [])
-        new.setdefault(CONF_ENTITIES_SOLAR, [])
-
-        # Fout voorkomen: import en export mogen niet leeg zijn; als de
-        # migratie geen meters kon overnemen, moet de gebruiker de options
-        # opnieuw invullen — de detectie in de options-flow doet dat.
-        hass.config_entries.async_update_entry(entry, data=new, version=2)
-        _LOGGER.info(
-            "Config entry gemigreerd van versie 1 naar 2 (multi-tarief formaat)"
-        )
-
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Data ophalen
 # ---------------------------------------------------------------------------
@@ -185,7 +178,7 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
     Retourneert: (entity_id -> statistic_id, niet-gevonden entity's)
     """
     from homeassistant.components.recorder import get_instance
-    from homeassistant.components.recorder.statistics import get_statistic_ids
+    from homeassistant.components.recorder.statistics import list_statistic_ids
 
     instance = get_instance(hass)
     wanted = [e for e in entity_ids if e]
@@ -193,15 +186,21 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
         return {}, []
 
     with instance.get_session() as session:
-        all_stats = get_statistic_ids(hass, session=session) or {}
+        all_stats = list_statistic_ids(hass, session=session) or []
+
+    # Normaliseer naar een verzameling van statistic-id's
+    known_ids = {
+        item["statistic_id"] if isinstance(item, dict) else item
+        for item in all_stats
+    }
 
     resolved: dict[str, str] = {}
     missing: list[str] = []
     for eid in wanted:
-        if eid in all_stats:
+        if eid in known_ids:
             resolved[eid] = eid
             continue
-        candidates = sorted(k for k in all_stats if k.startswith(f"{eid}_"))
+        candidates = sorted(k for k in known_ids if k.startswith(f"{eid}_"))
         if candidates:
             resolved[eid] = candidates[-1]
         else:
