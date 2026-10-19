@@ -1,5 +1,7 @@
 """Thuisbatterij Analyse: analyseert P1- en zonnepaneelhistorie en
-simuleert de businesscase van een thuisbatterij."""
+simuleert de businesscase van een thuisbatterij. Ondersteunt meerdere
+meters per richting (bijv. tarief 1 + tarief 2), automatisch gedetecteerd
+via de config flow."""
 
 from __future__ import annotations
 
@@ -14,6 +16,9 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     DOMAIN,
+    CONF_ENTITIES_IMPORT,
+    CONF_ENTITIES_EXPORT,
+    CONF_ENTITIES_SOLAR,
     CONF_ENTITY_IMPORT,
     CONF_ENTITY_EXPORT,
     CONF_ENTITY_SOLAR,
@@ -38,6 +43,28 @@ SERVICE_START = "start"
 MAX_HISTORY_DAYS = 365
 MIN_ANALYSIS_DAYS = 14
 MARGINAL_KWH_THRESHOLD = 25.0
+
+
+def _as_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return [v for v in value if v]
+
+
+def _get_groups(data: dict) -> dict[str, list[str]]:
+    """Lees de entity-groepen uit de configuratie (nieuw: lijsten,
+    oud: enkele entity per richting)."""
+    groups = {
+        "import": _as_list(data.get(CONF_ENTITIES_IMPORT))
+        or _as_list(data.get(CONF_ENTITY_IMPORT)),
+        "export": _as_list(data.get(CONF_ENTITIES_EXPORT))
+        or _as_list(data.get(CONF_ENTITY_EXPORT)),
+        "solar": _as_list(data.get(CONF_ENTITIES_SOLAR))
+        or _as_list(data.get(CONF_ENTITY_SOLAR)),
+    }
+    return {k: v for k, v in groups.items() if v}
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -133,13 +160,13 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
     return resolved, missing
 
 
-def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
+def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     """Haal uurlijkse kWh uit de recorder long-term statistics.
 
     De statistics-tabel bevat CUMULATIEVE meterstanden (sum) per uur.
     Het verbruik per uur is het verschil tussen opeenvolgende standen.
-    Negatieve verschillen (meterreset of vervuilde data) worden op 0 gezet
-    en geteld als kwaliteitswaarschuwing.
+    Binnen een groep (bijv. tarief 1 + tarief 2) worden de uurverschillen
+    van alle entity's bij elkaar opgeteld.
 
     Retourneert: (lijst met per uur (ts, import, export, solar),
     tijdstip eerste uur, tijdstip laatste uur, kwaliteitsdict)
@@ -148,8 +175,9 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     from homeassistant.components.recorder.db_schema import Statistics, StatisticsMeta
     from sqlalchemy import select
 
-    # 1) Entity-id's omzetten naar echte statistic-id's (incl. _2-varianten)
-    resolved, missing_ents = _resolve_statistic_ids(hass, statistic_ids)
+    # 1) Alle entity-id's van alle groepen verzamelen en oplossen
+    all_ents = sorted({e for ents in groups.values() for e in ents})
+    resolved, missing_ents = _resolve_statistic_ids(hass, all_ents)
     if not resolved:
         return [], None, None, {
             "warnings": [],
@@ -190,7 +218,7 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
     finally:
         session.close()
 
-    # Cumulatieve standen per statistic-id, op tijdstip
+    # 2) Cumulatieve standen per statistic-id, op tijdstip
     raw: dict[str, dict[float, float]] = {name: {} for name in ids}
     for meta_id, start_dt, sum_val in stat_rows:
         name = id_to_name.get(meta_id)
@@ -209,13 +237,14 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
             "missing_entities": missing_ents,
             "error": "De gekozen entity's hebben nog geen uurstatistieken opgebouwd.",
         }
-    first_ts, last_ts = all_ts[0], all_ts[-1]
+    last_ts = all_ts[-1]
 
     # Beperk tot de meest recente 365 dagen
     cutoff = last_ts - MAX_HISTORY_DAYS * 86400
     all_ts = [ts for ts in all_ts if ts >= cutoff]
     first_ts = all_ts[0]
 
+    # 3) Per entity uurverschillen berekenen (met reset-detectie)
     warnings = []
     if missing_ents:
         warnings.append(
@@ -261,18 +290,22 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
             "onbetrouwbaar omdat seizoensverschillen ontbreken."
         )
 
-    ordered_ents = [e for e in statistic_ids if e]
+    # 4) Groepssommen per uur (tarieven bij elkaar optellen)
     hours = []
     for ts in all_ts:
-        imp = deltas.get(ordered_ents[0], {}).get(ts, 0.0) if len(ordered_ents) > 0 else 0.0
-        exp = deltas.get(ordered_ents[1], {}).get(ts, 0.0) if len(ordered_ents) > 1 else 0.0
-        sol = deltas.get(ordered_ents[2], {}).get(ts, 0.0) if len(ordered_ents) > 2 else 0.0
-        hours.append((ts, imp, exp, sol))
+        row = []
+        for group in ("import", "export", "solar"):
+            total = 0.0
+            for e in groups.get(group, []):
+                total += deltas.get(e, {}).get(ts, 0.0)
+            row.append(total)
+        hours.append((ts, row[0], row[1], row[2]))
 
     quality = {
         "warnings": warnings,
         "hours_found": len(all_ts),
         "missing_entities": missing_ents,
+        "groups": {k: v for k, v in groups.items()},
     }
     return hours, first_ts, last_ts, quality
 
@@ -285,9 +318,6 @@ def _fetch_hourly_kwh(hass: HomeAssistant, statistic_ids: list[str]):
 async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     """Volledige analyse: ophalen, simuleren, advies samenstellen."""
     data = {**entry.data, **(entry.options or {})}
-    import_ent = data[CONF_ENTITY_IMPORT]
-    export_ent = data[CONF_ENTITY_EXPORT]
-    solar_ent = data.get(CONF_ENTITY_SOLAR) or None
 
     price_import = float(data.get(CONF_PRICE_IMPORT, 0.30))
     price_export = float(data.get(CONF_PRICE_EXPORT, 0.0))
@@ -297,8 +327,15 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     max_power = float(data.get(CONF_BATTERY_MAX_POWER_KW, 3.0))
     max_capacity = float(data.get(CONF_MAX_CAPACITY, DEFAULT_MAX_CAPACITY))
 
+    groups = _get_groups(data)
+    if "import" not in groups or "export" not in groups:
+        raise HomeAssistantError(
+            "Geen verbruiks- of teruglevermeters geconfigureerd. Open de "
+            "integratie-instellingen en vink de P1-meters aan."
+        )
+
     hours, first_ts, last_ts, quality = await hass.async_add_executor_job(
-        _fetch_hourly_kwh, hass, [import_ent, export_ent, solar_ent or ""]
+        _fetch_hourly_kwh, hass, groups
     )
     if not hours or first_ts is None:
         detail = quality.get("error") if quality else None
