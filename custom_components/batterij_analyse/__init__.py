@@ -186,16 +186,13 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
 
     Retourneert: (entity_id -> statistic_id, niet-gevonden entity's)
     """
-    from homeassistant.components.recorder import get_instance
     from homeassistant.components.recorder.statistics import list_statistic_ids
 
-    instance = get_instance(hass)
     wanted = [e for e in entity_ids if e]
     if not wanted:
         return {}, []
 
-    with instance.get_session() as session:
-        all_stats = list_statistic_ids(hass, session=session) or []
+    all_stats = list_statistic_ids(hass) or []
 
     # Normaliseer naar een verzameling van statistic-id's
     known_ids = {
@@ -534,7 +531,8 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         )
 
     # --- rapport (markdown) -----------------------------------------------
-    table_rows = "\n".join(
+    table_rows = "
+".join(
         f"| {r['capacity_kwh']} | {r['yearly_saved_kwh']:.0f} | {r['autarkie_pct']} | "
         f"{r['investment_eur']:.0f} | {r['yearly_savings_eur']:.0f} | "
         f"{r['payback_years'] if r['payback_years'] else '—'} |"
@@ -543,40 +541,76 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     warning_block = ""
     if quality.get("warnings"):
         warning_block = (
-            "## ⚠️ Datakwaliteit\n\n"
-            + "\n".join(f"- {w}" for w in quality["warnings"])
-            + "\n\n"
+            "## ⚠️ Datakwaliteit
+
+"
+            + "
+".join(f"- {w}" for w in quality["warnings"])
+            + "
+
+"
         )
     max_useful_txt = f"{max_useful} kWh" if max_useful else "geen extra capaciteit levert nog iets op"
     report = (
-        f"# 🔋 Thuisbatterij Analyse\n\n"
+        f"# 🔋 Thuisbatterij Analyse
+
+"
         f"**Geanalyseerde periode:** {days:.0f} dagen "
         f"({datetime.fromtimestamp(first_ts).strftime('%d-%m-%Y')} t/m "
-        f"{datetime.fromtimestamp(last_ts).strftime('%d-%m-%Y')})\n\n"
+        f"{datetime.fromtimestamp(last_ts).strftime('%d-%m-%Y')})
+
+"
         f"{warning_block}"
-        f"| Kenmerk | Waarde |\n|---|---|\n"
-        f"| Gemiddeld verbruik uit net | {avg_daily_import:.1f} kWh/dag |\n"
-        f"| Gemiddelde teruglevering | {avg_daily_export:.1f} kWh/dag |\n"
-        f"| Gemiddelde zonne-opwek | {avg_daily_solar:.1f} kWh/dag |\n"
-        f"| Zelfgebruik zonder batterij | {100-export_ratio*100:.0f}% |\n\n"
-        f"## Aanbeveling\n"
+        f"| Kenmerk | Waarde |
+|---|---|
+"
+        f"| Gemiddeld verbruik uit net | {avg_daily_import:.1f} kWh/dag |
+"
+        f"| Gemiddelde teruglevering | {avg_daily_export:.1f} kWh/dag |
+"
+        f"| Gemiddelde zonne-opwek | {avg_daily_solar:.1f} kWh/dag |
+"
+        f"| Zelfgebruik zonder batterij | {100-export_ratio*100:.0f}% |
+
+"
+        f"## Aanbeveling
+"
         f"**Aanbevolen capaciteit: {recommended['capacity_kwh']} kWh** "
-        f"(beste terugverdientijd)\n\n"
+        f"(beste terugverdientijd)
+
+"
         f"- Maximale zinvolle capaciteit: **{max_useful_txt}** "
-        f"(boven deze maat levert extra kWh minder dan {MARGINAL_KWH_THRESHOLD:.0f} kWh/jaar op)\n"
-        f"- Jaarlijks vermeden afname: **{recommended['yearly_saved_kwh']:.0f} kWh**\n"
+        f"(boven deze maat levert extra kWh minder dan {MARGINAL_KWH_THRESHOLD:.0f} kWh/jaar op)
+"
+        f"- Jaarlijks vermeden afname: **{recommended['yearly_saved_kwh']:.0f} kWh**
+"
         f"- Netto jaarlijkse besparing: **€{recommended['yearly_savings_eur']:.0f}** "
-        f"(incl. gemiste terugleververgoeding)\n"
-        f"- Autarkie daarmee: **{recommended['autarkie_pct']}%**\n"
+        f"(incl. gemiste terugleververgoeding)
+"
+        f"- Autarkie daarmee: **{recommended['autarkie_pct']}%**
+"
         f"- Investeringsindicatie: **€{recommended['investment_eur']:.0f}** "
-        f"(bij €{cost_kwh:.0f}/kWh + €{cost_fixed:.0f} vast)\n"
-        f"- Terugverdientijd: **{recommended['payback_years'] if recommended['payback_years'] else '—'} jaar**\n\n"
-        f"## Advies zonnepanelen\n"
-        + "\n".join(f"- {line}" for line in panel_advice)
-        + "\n\n## Simulatie per capaciteit\n\n"
+        f"(bij €{cost_kwh:.0f}/kWh + €{cost_fixed:.0f} vast)
+"
+        f"- Terugverdientijd: **{recommended['payback_years'] if recommended['payback_years'] else '—'} jaar**
+
+"
+        f"## Advies zonnepanelen
+"
+        + "
+".join(f"- {line}" for line in panel_advice)
+        + "
+
+## Simulatie per capaciteit
+
+"
         f"| Capaciteit (kWh) | Vermeden afname (kWh/jr) | Autarkie % | Investeren (€) | "
-        f"Netto besparing (€/jr) | Terugverdient (jr) |\n|---|---|---|---|---|---|\n"
-        f"{table_rows}\n\n"
+        f"Netto besparing (€/jr) | Terugverdient (jr) |
+|---|---|---|---|---|---|
+"
+        f"{table_rows}
+
+"
         f"_Aannames: round-trip rendement {efficiency*100:.0f}%, max {max_power:.1f} kW "
         f"laad/ontlaadvermogen, stroomprijs €{price_import:.2f}/kWh en "
         f"teruglevertarief €{price_export:.2f}/kWh. "
