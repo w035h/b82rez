@@ -4,7 +4,7 @@
   "codeowners": ["@33fon"],
   "config_flow": true,
   "dependencies": ["recorder"],
-  "documentation": "https://www.home-assistant.io/",
+  "documentation": "https://github.com/w035h/b82rez",
   "iot_class": "local_polling",
-  "version": "1.0.0"
+  "version": "3.0.0"
 }
