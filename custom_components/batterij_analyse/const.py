@@ -2,9 +2,16 @@
 
 DOMAIN = "batterij_analyse"
 
+# Multi-entity (lijsten) — v2
+CONF_ENTITIES_IMPORT = "entities_import"
+CONF_ENTITIES_EXPORT = "entities_export"
+CONF_ENTITIES_SOLAR = "entities_solar"
+
+# Legacy keys (v1, enkele entity) — nog gelezen voor backward compat
 CONF_ENTITY_IMPORT = "entity_import"
 CONF_ENTITY_EXPORT = "entity_export"
 CONF_ENTITY_SOLAR = "entity_solar"
+
 CONF_PRICE_IMPORT = "price_import"
 CONF_PRICE_EXPORT = "price_export"
 CONF_BATTERY_COST_KWH = "battery_cost_kwh"

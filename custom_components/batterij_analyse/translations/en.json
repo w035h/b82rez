@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Home Battery Analysis",
-        "description": "Select your energy entities (kWh meter readings!) and enter your tariffs.",
+        "description": "Detected P1 meters are pre-selected. Select all consumption and feed-in tariffs (e.g. tariff 1 + 2) so totals are correct.",
         "data": {
-          "entity_import": "Grid import energy entity (kWh, e.g. P1 consumption)",
-          "entity_export": "Grid export energy entity (kWh, e.g. P1 feed-in)",
-          "entity_solar": "Solar production energy entity (kWh, optional)",
+          "entities_import": "Grid import (kWh meters, e.g. tariff 1 + 2)",
+          "entities_export": "Grid feed-in (kWh meters)",
+          "entities_solar": "Solar production (kWh meters, optional)",
           "price_import": "Electricity price (€/kWh)",
           "price_export": "Feed-in tariff (€/kWh)",
           "battery_cost_kwh": "Battery cost per installed kWh (€/kWh)",
@@ -18,6 +18,12 @@
         }
       }
     },
+    "error": {
+      "required_import": "Select at least one consumption meter.",
+      "required_export": "Select at least one feed-in meter.",
+      "overlap": "Import and export may not contain the same entity.",
+      "schema_error": "Internal error loading the form; check the logs."
+    },
     "abort": {
       "single_instance_allowed": "Already configured."
     }
@@ -27,9 +33,9 @@
       "init": {
         "title": "Home Battery Analysis settings",
         "data": {
-          "entity_import": "Grid import energy entity (kWh)",
-          "entity_export": "Grid export energy entity (kWh)",
-          "entity_solar": "Solar production energy entity (kWh, optional)",
+          "entities_import": "Grid import (kWh meters)",
+          "entities_export": "Grid feed-in (kWh meters)",
+          "entities_solar": "Solar production (kWh meters, optional)",
           "price_import": "Electricity price (€/kWh)",
           "price_export": "Feed-in tariff (€/kWh)",
           "battery_cost_kwh": "Battery cost per installed kWh (€/kWh)",
@@ -39,6 +45,12 @@
           "max_capacity": "Maximum simulated capacity (kWh)"
         }
       }
+    },
+    "error": {
+      "required_import": "Select at least one consumption meter.",
+      "required_export": "Select at least one feed-in meter.",
+      "overlap": "Import and export may not contain the same entity.",
+      "schema_error": "Internal error loading the form; check the logs."
     }
   }
 }

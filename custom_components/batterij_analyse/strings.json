@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Thuisbatterij Analyse",
-        "description": "Kies je energie-entity's (kWh-meterstanden!) en vul je tarieven in.",
+        "description": "Gevonden P1-meters zijn automatisch voorgesteld. Vink alle verbruiks- en teruglevertarieven aan (bijv. tarief 1 + tarief 2) zodat het totaalverbruik klopt.",
         "data": {
-          "entity_import": "Entity stroomverbruik uit het net (kWh, bijv. P1 meterstand verbruik)",
-          "entity_export": "Entity teruglevering aan het net (kWh, bijv. P1 meterstand teruglevering)",
-          "entity_solar": "Entity zonnepanelen productie (kWh, optioneel)",
+          "entities_import": "Verbruik uit het net (kWh-meters, bijv. tarief 1 + 2)",
+          "entities_export": "Teruglevering aan het net (kWh-meters)",
+          "entities_solar": "Zonnepanelen productie (kWh-meters, optioneel)",
           "price_import": "Stroomprijs (€/kWh)",
           "price_export": "Teruglevertarief (€/kWh)",
           "battery_cost_kwh": "Batterijkosten per kWh geïnstalleerd (€/kWh)",
@@ -19,7 +19,10 @@
       }
     },
     "error": {
-      "same_entity": "Verbruik en teruglevering mogen niet dezelfde entity zijn."
+      "required_import": "Kies minstens één verbruiksmeter.",
+      "required_export": "Kies minstens één teruglevermeter.",
+      "overlap": "Verbruik en teruglevering mogen niet dezelfde entity bevatten.",
+      "schema_error": "Interne fout bij het laden van het formulier; controleer de logs."
     },
     "abort": {
       "single_instance_allowed": "Er is al een instantie geconfigureerd."
@@ -30,9 +33,9 @@
       "init": {
         "title": "Thuisbatterij Analyse instellingen",
         "data": {
-          "entity_import": "Entity stroomverbruik uit het net (kWh)",
-          "entity_export": "Entity teruglevering aan het net (kWh)",
-          "entity_solar": "Entity zonnepanelen productie (kWh, optioneel)",
+          "entities_import": "Verbruik uit het net (kWh-meters)",
+          "entities_export": "Teruglevering aan het net (kWh-meters)",
+          "entities_solar": "Zonnepanelen productie (kWh-meters, optioneel)",
           "price_import": "Stroomprijs (€/kWh)",
           "price_export": "Teruglevertarief (€/kWh)",
           "battery_cost_kwh": "Batterijkosten per kWh geïnstalleerd (€/kWh)",
@@ -44,7 +47,10 @@
       }
     },
     "error": {
-      "same_entity": "Verbruik en teruglevering mogen niet dezelfde entity zijn."
+      "required_import": "Kies minstens één verbruiksmeter.",
+      "required_export": "Kies minstens één teruglevermeter.",
+      "overlap": "Verbruik en teruglevering mogen niet dezelfde entity bevatten.",
+      "schema_error": "Interne fout bij het laden van het formulier; controleer de logs."
     }
   }
 }
