@@ -18,6 +18,9 @@
         }
       }
     },
+    "error": {
+      "same_entity": "Verbruik en teruglevering mogen niet dezelfde entity zijn."
+    },
     "abort": {
       "single_instance_allowed": "Er is al een instantie geconfigureerd."
     }
@@ -39,6 +42,9 @@
           "max_capacity": "Maximale te simuleren capaciteit (kWh)"
         }
       }
+    },
+    "error": {
+      "same_entity": "Verbruik en teruglevering mogen niet dezelfde entity zijn."
     }
   }
 }
