@@ -237,9 +237,11 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     Retourneert: (lijst met per uur (ts, import, export, solar),
     tijdstip eerste uur, tijdstip laatste uur, kwaliteitsdict)
     """
+    from datetime import datetime, timedelta, timezone
+
     from homeassistant.components.recorder import get_instance
     from homeassistant.components.recorder.db_schema import Statistics, StatisticsMeta
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     # 1) Alle entity-id's van alle groepen verzamelen en oplossen
     all_ents = sorted({e for ents in groups.values() for e in ents})
@@ -260,6 +262,7 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         }
 
     ids = list(resolved.values())
+    available_ids: list[str] = []
 
     instance = get_instance(hass)
     session = instance.get_session()
@@ -292,6 +295,23 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
             "%d statistics-rijen opgehaald voor %d meters",
             len(stat_rows), len(id_to_name),
         )
+        if not stat_rows:
+            # Zelf-diagnose: welke statistic-id's hebben wél uurstatistieken?
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            avail_rows = session.execute(
+                select(StatisticsMeta.statistic_id)
+                .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
+                .where(StatisticsMeta.has_sum.is_(True))
+                .where(Statistics.start > cutoff_dt)
+                .group_by(StatisticsMeta.statistic_id)
+                .order_by(func.count(Statistics.id).desc())
+                .limit(20)
+            ).all()
+            available_ids = [row[0] for row in avail_rows]
+            _LOGGER.debug(
+                "Geen statistics-rijen voor %s; statistic-id's met data (laatste 30 dagen): %s",
+                ids, available_ids,
+            )
     finally:
         session.close()
 
@@ -316,8 +336,12 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
                 "De gekozen entity's hebben nog geen uurstatistieken opgebouwd "
                 "(0 rijen in de statistics-tabel voor: "
                 + ", ".join(ids)
-                + "). Controleer of de recorder draait en of de meters onder "
-                "Developer Tools -> Statistics uurstatistieken tonen."
+                + "). Statistic-id's die WEL uurstatistieken hebben (laatste 30 dagen): "
+                + (", ".join(available_ids) if available_ids else "geen enkele")
+                + ". Mogelijke oorzaken: unit- of state_class-wijziging (controleer "
+                "Developer Tools -> Statistics op een waarschuwing en gebruik 'Fix'), "
+                "een recorder-exclude, of meters zonder opgebouwde historie. Kies in "
+                "de integratie-instellingen meters uit de lijst met data."
             ),
         }
     last_ts = all_ts[-1]
