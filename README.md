@@ -4,6 +4,8 @@ Deze integration haalt de historie van je **P1-meter (DSMR)** en je **omvormer/z
 
 Vanaf **v3.0.0** ondersteunt de integratie **meerdere meters per richting** (bijv. tarief 1 + tarief 2) en worden je P1-meters **automatisch gedetecteerd en voorgeselecteerd** in de configuratieflow.
 
+Vanaf **v3.0.3** zit er een **Start analyse-knop** in het apparaat naast de sensoren, zodat je de analyse direct kunt bedienen zonder de service handmatig aan te roepen.
+
 ## Installatie
 
 ### Via HACS
@@ -12,7 +14,7 @@ Vanaf **v3.0.0** ondersteunt de integratie **meerdere meters per richting** (bij
 2. Installeer **Thuisbatterij Analyse** en herstart Home Assistant.
 3. Ga naar **Instellingen → Apparaten & Diensten → Integratie toevoegen** en zoek op **"Thuisbatterij Analyse"**.
 
-> **Voor HACS-updates:** maak bij een nieuwe versie een GitHub-release met een tag die exact gelijk is aan de `version` in `manifest.json` (bijv. `v3.0.0` ↔ `"version": "3.0.0"`). Zonder bijpassende release-tag geeft HACS een versiefout.
+> **Voor HACS-updates:** maak bij een nieuwe versie een GitHub-release met een tag die exact gelijk is aan de `version` in `manifest.json` (bijv. `v3.0.3` ↔ `"version": "3.0.3"`). Zonder bijpassende release-tag geeft HACS een versiefout.
 
 ### Handmatig
 
@@ -44,10 +46,15 @@ Bij het toevoegen scant de integratie je installatie en **selecteert automatisch
 
 ## Gebruik
 
-Roep de service **`batterij_analyse.start`** aan (Hulpmiddelen voor ontwikkelaars → Acties, of via een automatisering). De analyse leest max. 365 dagen uurhistorie en vult daarna de sensoren:
+Je kunt de analyse op twee manieren starten:
+
+1. **Knop:** druk op **Start analyse** (`button.start_analyse`) — deze staat in het apparaat Thuisbatterij Analyse, direct naast de sensoren, en toont als attributen de periode en het laatste resultaat.
+2. **Service:** roep `batterij_analyse.start` aan (Hulpmiddelen voor ontwikkelaars → Acties, of via een automatisering).
+
+De analyse leest max. 365 dagen uurhistorie en vult daarna de sensoren:
 
 - `sensor.aanbevolen_batterijcapaciteit` – aanbevolen maat (kWh), met `max_useful_kwh` en `panel_advice` als attributen
-- `sensor.jaarlijkse_besparing_batterij` – netto jaarlijkse besparing (€), met `report_markdown` als attribuut
+- `sensor.jaarlijkse_besparing_batterij` – netto jaarlijke besparing (€), met `report_markdown` als attribuut
 - `sensor.jaarlijks_bespaarde_energie` – vermeden afname (kWh/jaar)
 - `sensor.autarkie_met_batterij` – autarkie (%)
 - `sensor.terugverdientijd_batterij` – terugverdientijd (jaren)
@@ -80,6 +87,7 @@ cards:
   - type: entities
     title: Businesscase
     entities:
+      - button.start_analyse
       - sensor.jaarlijkse_besparing_batterij
       - sensor.jaarlijks_bespaarde_energie
       - sensor.terugverdientijd_batterij

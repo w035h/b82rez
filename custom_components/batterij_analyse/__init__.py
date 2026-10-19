@@ -36,7 +36,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "button"]
 
 SERVICE_START = "start"
 
@@ -115,6 +115,30 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def async_start_analysis(hass: HomeAssistant, entry_id: str | None = None) -> dict:
+    """Draai de analyse voor één config entry (of de eerste beschikbare).
+
+    Wordt zowel door de service batterij_analyse.start als door de
+    Start-analyse-knop gebruikt.
+    """
+    if entry_id and entry_id in hass.data[DOMAIN]:
+        target = hass.data[DOMAIN][entry_id]
+    else:
+        target = next(iter(hass.data[DOMAIN].values()), None)
+    if target is None:
+        raise HomeAssistantError("Thuisbatterij Analyse is nog niet geconfigureerd.")
+
+    result = await async_run_analysis(hass, target["entry"])
+    target[ATTR_RESULT] = result
+    _LOGGER.info(
+        "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, netto besparing €%.0f/jaar",
+        result["recommended_kwh"],
+        result["yearly_savings"],
+    )
+    hass.bus.async_fire(EVENT_UPDATED, {"entry_id": target["entry"].entry_id})
+    return result
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
     hass.data[DOMAIN][entry.entry_id] = {
@@ -132,22 +156,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def async_handle_start(call: ServiceCall) -> None:
         """Run the analysis for the (optionally given) config entry."""
-        entry_id = call.data.get("entry_id")
-        if entry_id and entry_id in hass.data[DOMAIN]:
-            target = hass.data[DOMAIN][entry_id]
-        else:
-            target = next(iter(hass.data[DOMAIN].values()))
-        if target is None:
-            raise HomeAssistantError("Thuisbatterij Analyse is nog niet geconfigureerd.")
-
-        result = await async_run_analysis(hass, target["entry"])
-        target[ATTR_RESULT] = result
-        _LOGGER.info(
-            "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, netto besparing €%.0f/jaar",
-            result["recommended_kwh"],
-            result["yearly_savings"],
-        )
-        hass.bus.async_fire(EVENT_UPDATED, {"entry_id": target["entry"].entry_id})
+        await async_start_analysis(hass, call.data.get("entry_id"))
 
     hass.services.async_register(DOMAIN, SERVICE_START, async_handle_start)
     return True

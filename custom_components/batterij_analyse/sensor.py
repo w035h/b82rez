@@ -19,11 +19,9 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import ATTR_RESULT, EVENT_UPDATED
+from .const import ATTR_RESULT, DOMAIN, EVENT_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
-
-ENTITY_IMPORT = "homeassistant.const"
 
 
 async def async_setup_entry(
@@ -31,7 +29,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    store = hass.data["batterij_analyse"][entry.entry_id]
+    store = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
         AnalyseSensor(
@@ -100,7 +98,7 @@ class AnalyseSensor(SensorEntity):
         self._attr_suggested_display_precision = precision
         self._attr_icon = "mdi:battery-charging"
         self._attr_device_info = {
-            "identifiers": {("batterij_analyse", entry.entry_id)},
+            "identifiers": {(DOMAIN, entry.entry_id)},
             "name": "Thuisbatterij Analyse",
         }
 
@@ -120,7 +118,7 @@ class AnalyseSensor(SensorEntity):
         result = self._store.get(ATTR_RESULT)
         if result is None:
             self._attr_native_value = None
-            self._attr_extra_state_attributes = {"status": "Start de service batterij_analyse.start"}
+            self._attr_extra_state_attributes = {"status": "Druk op de Start analyse-knop of roep batterij_analyse.start aan"}
             return
         self._attr_native_value = result.get(self._key)
         if self._key == "yearly_savings":
