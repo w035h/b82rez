@@ -121,6 +121,55 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migreer oude config entries naar het nieuwe formaat.
+
+    v1 (losse entity-velden) -> v2 (lijsten per richting, multi-tarief).
+    Oude keys worden omgezet naar lijsten en daarna verwijderd, zodat
+    de code overal met de nieuwe keys kan werken.
+    """
+    if entry.version > 2:
+        # Nieuwer dan we ondersteunen: niet downgraden
+        return False
+
+    if entry.version == 1:
+        old = {**entry.data, **(entry.options or {})}
+        new = dict(old)
+        changed = False
+
+        legacy_map = {
+            CONF_ENTITY_IMPORT: CONF_ENTITIES_IMPORT,
+            CONF_ENTITY_EXPORT: CONF_ENTITIES_EXPORT,
+            CONF_ENTITY_SOLAR: CONF_ENTITIES_SOLAR,
+        }
+        for old_key, new_key in legacy_map.items():
+            if old_key in new and new_key not in new:
+                value = new.pop(old_key)
+                if value:
+                    new[new_key] = [value] if isinstance(value, str) else list(value)
+                else:
+                    new[new_key] = []
+                changed = True
+            else:
+                new.pop(old_key, None)
+
+        # Zorg dat de nieuwe keys er sowieso zijn (geldige defaults: lege lijst
+        # wordt later in de options-flow door de detectie gevuld).
+        new.setdefault(CONF_ENTITIES_IMPORT, [])
+        new.setdefault(CONF_ENTITIES_EXPORT, [])
+        new.setdefault(CONF_ENTITIES_SOLAR, [])
+
+        # Fout voorkomen: import en export mogen niet leeg zijn; als de
+        # migratie geen meters kon overnemen, moet de gebruiker de options
+        # opnieuw invullen — de detectie in de options-flow doet dat.
+        hass.config_entries.async_update_entry(entry, data=new, version=2)
+        _LOGGER.info(
+            "Config entry gemigreerd van versie 1 naar 2 (multi-tarief formaat)"
+        )
+
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Data ophalen
 # ---------------------------------------------------------------------------
