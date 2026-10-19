@@ -237,10 +237,12 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     Retourneert: (lijst met per uur (ts, import, export, solar),
     tijdstip eerste uur, tijdstip laatste uur, kwaliteitsdict)
     """
-    from datetime import datetime, timedelta, timezone
-
     from homeassistant.components.recorder import get_instance
-    from homeassistant.components.recorder.db_schema import Statistics, StatisticsMeta
+    from homeassistant.components.recorder.db_schema import (
+        Statistics,
+        StatisticsMeta,
+        StatisticsShortTerm,
+    )
     from sqlalchemy import func, select
 
     # 1) Alle entity-id's van alle groepen verzamelen en oplossen
@@ -262,7 +264,6 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         }
 
     ids = list(resolved.values())
-    available_ids: list[str] = []
 
     instance = get_instance(hass)
     session = instance.get_session()
@@ -295,53 +296,97 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
             "%d statistics-rijen opgehaald voor %d meters",
             len(stat_rows), len(id_to_name),
         )
+        short_rows = []
+        diag: dict = {}
         if not stat_rows:
-            # Zelf-diagnose: welke statistic-id's hebben wél uurstatistieken?
-            cutoff_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            # Lange-termijnstatistieken leeg: val terug op de
+            # korte-termijnstatistieken (max ca. 10 dagen, 5-min resolutie).
+            short_rows = session.execute(
+                select(
+                    StatisticsShortTerm.metadata_id,
+                    StatisticsShortTerm.start,
+                    StatisticsShortTerm.sum,
+                ).where(StatisticsShortTerm.metadata_id.in_(id_to_name))
+                .order_by(StatisticsShortTerm.start)
+            ).all()
+            _LOGGER.debug(
+                "Lange-termijnstatistieken leeg; fallback op korte-termijn: %d rijen",
+                len(short_rows),
+            )
+        if not stat_rows and not short_rows:
+            # Zelf-diagnose van de recorder-database.
+            stat_count = (
+                session.execute(select(func.count(Statistics.id))).scalar() or 0
+            )
+            meta_count = (
+                session.execute(select(func.count(StatisticsMeta.id))).scalar() or 0
+            )
+            min_start, max_start = session.execute(
+                select(func.min(Statistics.start), func.max(Statistics.start))
+            ).one()
             avail_rows = session.execute(
                 select(StatisticsMeta.statistic_id)
                 .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
-                .where(StatisticsMeta.has_sum.is_(True))
-                .where(Statistics.start > cutoff_dt)
                 .group_by(StatisticsMeta.statistic_id)
                 .order_by(func.count(Statistics.id).desc())
                 .limit(20)
             ).all()
-            available_ids = [row[0] for row in avail_rows]
-            _LOGGER.debug(
-                "Geen statistics-rijen voor %s; statistic-id's met data (laatste 30 dagen): %s",
-                ids, available_ids,
-            )
+            diag = {
+                "statistics_rows": stat_count,
+                "statistics_meta_rows": meta_count,
+                "min_start": str(min_start),
+                "max_start": str(max_start),
+                "top_ids": [row[0] for row in avail_rows],
+            }
+            _LOGGER.debug("Recorder-diagnose: %s", diag)
     finally:
         session.close()
 
     # 2) Cumulatieve standen per statistic-id, op tijdstip
-    raw: dict[str, dict[float, float]] = {name: {} for name in ids}
-    for meta_id, start_dt, sum_val in stat_rows:
-        name = id_to_name.get(meta_id)
-        if name is None or sum_val is None:
-            continue
-        try:
-            ts = start_dt.timestamp()
-        except (AttributeError, ValueError, OSError):
-            continue
-        raw[name][ts] = float(sum_val)
+    def _rows_to_raw(rows) -> dict[str, dict[float, float]]:
+        data: dict[str, dict[float, float]] = {name: {} for name in ids}
+        for meta_id, start_dt, sum_val in rows:
+            name = id_to_name.get(meta_id)
+            if name is None or sum_val is None:
+                continue
+            try:
+                ts = start_dt.timestamp()
+            except (AttributeError, ValueError, OSError):
+                continue
+            data[name][ts] = float(sum_val)
+        return data
 
+    raw = _rows_to_raw(stat_rows)
     all_ts = sorted({ts for name in ids for ts in raw[name]})
+    stats_source = "long_term"
+    if not all_ts and short_rows:
+        # Terugval: korte-termijnstatistieken (5 min, max ca. 10 dagen)
+        raw = _rows_to_raw(short_rows)
+        all_ts = sorted({ts for name in ids for ts in raw[name]})
+        stats_source = "short_term"
     if not all_ts:
+        top_ids = diag.get("top_ids") or []
         return [], None, None, {
             "warnings": [],
             "missing_entities": missing_ents,
+            "stats_source": stats_source,
             "error": (
-                "De gekozen entity's hebben nog geen uurstatistieken opgebouwd "
-                "(0 rijen in de statistics-tabel voor: "
+                "De gekozen entity's hebben geen enkele statistieken opgebouwd "
+                "(0 rijen in zowel statistics als statistics_short_term voor: "
                 + ", ".join(ids)
-                + "). Statistic-id's die WEL uurstatistieken hebben (laatste 30 dagen): "
-                + (", ".join(available_ids) if available_ids else "geen enkele")
-                + ". Mogelijke oorzaken: unit- of state_class-wijziging (controleer "
-                "Developer Tools -> Statistics op een waarschuwing en gebruik 'Fix'), "
-                "een recorder-exclude, of meters zonder opgebouwde historie. Kies in "
-                "de integratie-instellingen meters uit de lijst met data."
+                + "). Recorder-diagnose: statistics-tabel bevat "
+                + str(diag.get("statistics_rows", "onbekend"))
+                + " rijen ("
+                + str(diag.get("statistics_meta_rows", "onbekend"))
+                + " meters, periode "
+                + str(diag.get("min_start"))
+                + " t/m "
+                + str(diag.get("max_start"))
+                + "). Statistic-id's met de meeste data: "
+                + (", ".join(top_ids) if top_ids else "geen enkele")
+                + ". Mogelijke oorzaken: unit- of state_class-wijziging "
+                "(controleer Developer Tools -> Statistics op een waarschuwing en "
+                "gebruik 'Fix'), een recorder-exclude, of meters zonder historie."
             ),
         }
     last_ts = all_ts[-1]
@@ -353,6 +398,14 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
 
     # 3) Per entity uurverschillen berekenen (met reset-detectie)
     warnings = []
+    if stats_source == "short_term":
+        warnings.append(
+            "Lange-termijnstatistieken ontbreken voor de gekozen meters; de "
+            "analyse valt terug op korte-termijnstatistieken (max ca. 10 "
+            "dagen, 5 min resolutie). Controleer Developer Tools -> Statistics "
+            "en de recorder, zodat later een analyse op een volledig jaar "
+            "mogelijk is."
+        )
     if missing_ents:
         warnings.append(
             "Geen statistieken voor (genegeerd): " + ", ".join(missing_ents)
@@ -412,6 +465,7 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         "warnings": warnings,
         "hours_found": len(all_ts),
         "missing_entities": missing_ents,
+        "stats_source": stats_source,
         "groups": {k: v for k, v in groups.items()},
     }
     return hours, first_ts, last_ts, quality
@@ -479,14 +533,20 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         soc = 0.0
         saved = 0.0
         charged = 0.0
-        for _ts, imp, exp, _sol in hours:
+        prev_ts = None
+        for ts, imp, exp, _sol in hours:
+            # Duur van dit interval in uren: 1,0 bij uurstatistieken,
+            # 5/60 bij terugval op korte-termijnstatistieken. Ook gaten
+            # in de data (recorder-uitval) worden zo correct gewogen.
+            dt_hours = 1.0 if prev_ts is None else max(0.0, (ts - prev_ts) / 3600.0)
+            prev_ts = ts
             # Laden uit eigen teruglevering
-            charge = min(exp, max_power, cap - soc)
+            charge = min(exp, max_power * dt_hours, cap - soc)
             if charge > 0:
                 soc += charge * one_way_eff
                 charged += charge
             # Ontladen tegen verbruik uit het net
-            discharge = min(imp, max_power, soc)
+            discharge = min(imp, max_power * dt_hours, soc)
             if discharge > 0:
                 soc -= discharge / one_way_eff
                 saved += discharge
