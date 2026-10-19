@@ -244,6 +244,9 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     # 1) Alle entity-id's van alle groepen verzamelen en oplossen
     all_ents = sorted({e for ents in groups.values() for e in ents})
     resolved, missing_ents = _resolve_statistic_ids(hass, all_ents)
+    _LOGGER.debug(
+        "Statistic-id resolutie: %s (niet gevonden: %s)", resolved, missing_ents
+    )
     if not resolved:
         return [], None, None, {
             "warnings": [],
@@ -267,6 +270,10 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
             )
         ).all()
         id_to_name = {row[0]: row[1] for row in meta_rows}
+        _LOGGER.debug(
+            "Statistics-meta gevonden voor %d van %d statistic-id's",
+            len(id_to_name), len(ids),
+        )
         if not id_to_name:
             return [], None, None, {
                 "warnings": [],
@@ -281,6 +288,10 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
             ).where(Statistics.metadata_id.in_(id_to_name))
             .order_by(Statistics.start)
         ).all()
+        _LOGGER.debug(
+            "%d statistics-rijen opgehaald voor %d meters",
+            len(stat_rows), len(id_to_name),
+        )
     finally:
         session.close()
 
@@ -301,7 +312,13 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         return [], None, None, {
             "warnings": [],
             "missing_entities": missing_ents,
-            "error": "De gekozen entity's hebben nog geen uurstatistieken opgebouwd.",
+            "error": (
+                "De gekozen entity's hebben nog geen uurstatistieken opgebouwd "
+                "(0 rijen in de statistics-tabel voor: "
+                + ", ".join(ids)
+                + "). Controleer of de recorder draait en of de meters onder "
+                "Developer Tools -> Statistics uurstatistieken tonen."
+            ),
         }
     last_ts = all_ts[-1]
 
