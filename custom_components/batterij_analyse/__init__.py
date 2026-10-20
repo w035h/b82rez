@@ -243,6 +243,103 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
     return resolved, missing
 
 
+def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
+    """Diagnostiek over de recorder-statistieken (alleen in het foutpad,
+    dus pas wanneer er sowieso al iets mis is).
+
+    Retourneert o.a. per gekozen statistic-id het aantal rijen en het
+    aantal rijen met een niet-lege 'sum'. Een meter met rijen maar zonder
+    sums heeft (nog) nooit een numerieke waarde opgeleverd (bijv.
+    permanent 'unavailable' sinds de aanmaak).
+    """
+    from homeassistant.components.recorder import get_instance
+    from homeassistant.components.recorder.db_schema import (
+        Statistics,
+        StatisticsMeta,
+    )
+    from sqlalchemy import func, select
+
+    diag: dict = {"per_statistic_id": {}}
+    try:
+        instance = get_instance(hass)
+        session = instance.get_session()
+        try:
+            stat_count = (
+                session.execute(select(func.count(Statistics.id))).scalar() or 0
+            )
+            meta_count = (
+                session.execute(select(func.count(StatisticsMeta.id))).scalar() or 0
+            )
+            min_start, max_start = session.execute(
+                select(func.min(Statistics.start), func.max(Statistics.start))
+            ).one()
+            top_rows = session.execute(
+                select(StatisticsMeta.statistic_id)
+                .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
+                .group_by(StatisticsMeta.statistic_id)
+                .order_by(func.count(Statistics.id).desc())
+                .limit(20)
+            ).all()
+            per_id: dict[str, dict] = {}
+            if ids:
+                rows = session.execute(
+                    select(
+                        StatisticsMeta.statistic_id,
+                        func.count(Statistics.id),
+                        func.count(Statistics.sum),
+                        func.min(Statistics.start),
+                        func.max(Statistics.start),
+                    )
+                    .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
+                    .where(StatisticsMeta.statistic_id.in_(ids))
+                    .group_by(StatisticsMeta.statistic_id)
+                ).all()
+                for stat_id, total, with_sum, first_start, last_start in rows:
+                    per_id[stat_id] = {
+                        "rows": total,
+                        "rows_with_sum": with_sum,
+                        "first": str(first_start),
+                        "last": str(last_start),
+                    }
+            diag = {
+                "statistics_rows": stat_count,
+                "statistics_meta_rows": meta_count,
+                "min_start": str(min_start),
+                "max_start": str(max_start),
+                "top_ids": [row[0] for row in top_rows],
+                "per_statistic_id": per_id,
+            }
+        finally:
+            session.close()
+    except Exception:  # noqa: BLE001 - diagnose mag de fout nooit verergeren
+        _LOGGER.exception("Recorder-diagnose mislukt")
+    return diag
+
+
+def _entity_state_info(hass: HomeAssistant, entity_ids: list[str]) -> dict[str, dict]:
+    """Actuele staat van de gekozen entity's (diagnostiek in het foutpad).
+
+    Toont per entity of hij bestaat en zo ja de huidige stand,
+    state_class, device_class en unit, zodat direct zichtbaar is waarom
+    er geen statistieken worden opgebouwd.
+    """
+    info: dict[str, dict] = {}
+    states = getattr(hass, "states", None)
+    for eid in entity_ids:
+        state = states.get(eid) if states is not None else None
+        if state is None:
+            info[eid] = {"exists": False}
+            continue
+        info[eid] = {
+            "exists": True,
+            "state": state.state,
+            "state_class": state.attributes.get("state_class"),
+            "device_class": state.attributes.get("device_class"),
+            "unit": state.attributes.get("unit_of_measurement"),
+        }
+    return info
+
+
 def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     """Haal uurlijkse kWh uit de recorder long-term statistics.
 
@@ -314,7 +411,6 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
             len(stat_rows), len(id_to_name),
         )
         short_rows = []
-        diag: dict = {}
         if not stat_rows:
             # Lange-termijnstatistieken leeg: val terug op de
             # korte-termijnstatistieken (max ca. 10 dagen, 5-min resolutie).
@@ -330,32 +426,6 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
                 "Lange-termijnstatistieken leeg; fallback op korte-termijn: %d rijen",
                 len(short_rows),
             )
-        if not stat_rows and not short_rows:
-            # Zelf-diagnose van de recorder-database.
-            stat_count = (
-                session.execute(select(func.count(Statistics.id))).scalar() or 0
-            )
-            meta_count = (
-                session.execute(select(func.count(StatisticsMeta.id))).scalar() or 0
-            )
-            min_start, max_start = session.execute(
-                select(func.min(Statistics.start), func.max(Statistics.start))
-            ).one()
-            avail_rows = session.execute(
-                select(StatisticsMeta.statistic_id)
-                .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
-                .group_by(StatisticsMeta.statistic_id)
-                .order_by(func.count(Statistics.id).desc())
-                .limit(20)
-            ).all()
-            diag = {
-                "statistics_rows": stat_count,
-                "statistics_meta_rows": meta_count,
-                "min_start": str(min_start),
-                "max_start": str(max_start),
-                "top_ids": [row[0] for row in avail_rows],
-            }
-            _LOGGER.debug("Recorder-diagnose: %s", diag)
     finally:
         session.close()
 
@@ -382,28 +452,75 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         all_ts = sorted({ts for name in ids for ts in raw[name]})
         stats_source = "short_term"
     if not all_ts:
-        top_ids = diag.get("top_ids") or []
+        # Diagnose pas hier (en dus alleen bij een fout), met verse
+        # cijfers in plaats van aannames.
+        diag = _recorder_diagnose(hass, ids)
+        state_info = _entity_state_info(hass, all_ents)
+        unavailable = sorted(
+            eid
+            for eid, inf in state_info.items()
+            if not inf.get("exists")
+            or str(inf.get("state")).lower() in ("unavailable", "unknown", "none")
+        )
+        only_null_sums = sorted(
+            stat_id
+            for stat_id, inf in diag.get("per_statistic_id", {}).items()
+            if inf["rows"] > 0 and inf["rows_with_sum"] == 0
+        )
+        no_state_class = sorted(
+            eid
+            for eid, inf in state_info.items()
+            if inf.get("exists")
+            and inf.get("state_class") not in ("total_increasing", "total")
+        )
+        findings = []
+        if unavailable:
+            findings.append(
+                "Deze gekozen entity's bestaan niet (meer) of staan nu op "
+                "'unavailable'/'unknown': " + ", ".join(unavailable)
+                + ". Een meter bouwt alleen statistieken op als hij een "
+                "numerieke kWh-stand rapporteert."
+            )
+        if only_null_sums:
+            findings.append(
+                "Deze meters staan WEL in de statistics-tabel, maar met "
+                "uitsluitend lege waardes (lege 'sum' in alle rijen): "
+                + ", ".join(only_null_sums)
+                + ". Zij hebben nog nooit een numerieke stand opgeleverd; "
+                "meestal staat de sensor op 'unavailable' of bestaat hij "
+                "pas sinds kort."
+            )
+        if no_state_class:
+            findings.append(
+                "Deze entity's hebben geen state_class 'total_increasing' "
+                "of 'total' (vereist voor lange-termijnstatistieken): "
+                + ", ".join(no_state_class) + "."
+            )
+        findings.append(
+            "Recorder-diagnose: statistics-tabel bevat "
+            + str(diag.get("statistics_rows", "onbekend"))
+            + " rijen over "
+            + str(diag.get("statistics_meta_rows", "onbekend"))
+            + " meters, periode "
+            + str(diag.get("min_start"))
+            + " t/m "
+            + str(diag.get("max_start"))
+            + ". Statistic-id's met de meeste data: "
+            + (", ".join(diag.get("top_ids") or []) or "geen enkele")
+            + ". Controleer ook een eventuele 'recorder: exclude:' in "
+            "configuration.yaml en de waarschuwingen bij Developer Tools -> "
+            "Statistics (gebruik daar 'Fix' na een unit- of state_class-"
+            "wijziging)."
+        )
         return [], None, None, {
             "warnings": [],
             "missing_entities": missing_ents,
             "stats_source": stats_source,
+            "recorder_diagnose": diag,
+            "entity_states": state_info,
             "error": (
-                "De gekozen entity's hebben geen enkele statistieken opgebouwd "
-                "(0 rijen in zowel statistics als statistics_short_term voor: "
-                + ", ".join(ids)
-                + "). Recorder-diagnose: statistics-tabel bevat "
-                + str(diag.get("statistics_rows", "onbekend"))
-                + " rijen ("
-                + str(diag.get("statistics_meta_rows", "onbekend"))
-                + " meters, periode "
-                + str(diag.get("min_start"))
-                + " t/m "
-                + str(diag.get("max_start"))
-                + "). Statistic-id's met de meeste data: "
-                + (", ".join(top_ids) if top_ids else "geen enkele")
-                + ". Mogelijke oorzaken: unit- of state_class-wijziging "
-                "(controleer Developer Tools -> Statistics op een waarschuwing en "
-                "gebruik 'Fix'), een recorder-exclude, of meters zonder historie."
+                "Geen bruikbare uurstatistieken voor: " + ", ".join(ids) + ". "
+                + " ".join(findings)
             ),
         }
     last_ts = all_ts[-1]
