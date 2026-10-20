@@ -18,12 +18,22 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import ATTR_RESULT, DOMAIN, EVENT_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
+
+# Icon per sensor, zodat niet elke sensor het laad-batterij-icoon krijgt
+SENSOR_ICONS = {
+    "battery_capacity": "mdi:battery-charging-60",
+    "savings": "mdi:currency-eur",
+    "saved_energy": "mdi:lightning-bolt",
+    "autarky": "mdi:home-lightning-bolt",
+    "payback": "mdi:calendar-clock",
+}
 
 
 async def async_setup_entry(
@@ -98,11 +108,11 @@ class AnalyseSensor(RestoreEntity, SensorEntity):
         self._attr_name = name
         self._attr_native_unit_of_measurement = unit
         self._attr_suggested_display_precision = precision
-        self._attr_icon = "mdi:battery-charging"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": "Thuisbatterij Analyse",
-        }
+        self._attr_icon = SENSOR_ICONS.get(icon_id, "mdi:battery-charging")
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Thuisbatterij Analyse",
+        )
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
@@ -155,10 +165,11 @@ class AnalyseSensor(RestoreEntity, SensorEntity):
                 "max_useful_kwh": result.get("max_useful_kwh"),
                 "simulation": result.get("simulation"),
             }
+        else:
+            self._attr_extra_state_attributes = None
 
     @property
     def device_class(self):
         if self._unit == UnitOfEnergy.KILO_WATT_HOUR:
             return SensorDeviceClass.ENERGY
         return None
-

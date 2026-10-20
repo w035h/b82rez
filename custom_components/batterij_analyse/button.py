@@ -12,10 +12,11 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import async_start_analysis
-from .const import DOMAIN
+from .const import ATTR_RESULT, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,15 +41,15 @@ class StartAnalyseKnop(ButtonEntity):
         self._store = store
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_start"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": "Thuisbatterij Analyse",
-        }
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name="Thuisbatterij Analyse",
+        )
 
     @property
     def extra_state_attributes(self) -> dict:
         """Toon de laatste resultaat-status op de knop."""
-        result = self._store.get("result")
+        result = self._store.get(ATTR_RESULT)
         if result is None:
             return {"status": "Nog niet gedraaid — druk op de knop om te starten."}
         return {

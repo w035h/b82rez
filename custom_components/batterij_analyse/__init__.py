@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import re
 from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
@@ -120,7 +121,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_start_analysis(hass: HomeAssistant, entry_id: str | None = None) -> dict:
-    """Draai de analyse voor één config entry (of de eerste beschikbare).
+    """Draai de analyse voor Ã©Ã©n config entry (of de eerste beschikbare).
 
     Wordt zowel door de service batterij_analyse.start als door de
     Start-analyse-knop gebruikt.
@@ -142,7 +143,7 @@ async def async_start_analysis(hass: HomeAssistant, entry_id: str | None = None)
         result = await async_run_analysis(hass, target["entry"])
     target[ATTR_RESULT] = result
     _LOGGER.info(
-        "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, netto besparing €%.0f/jaar",
+        "Thuisbatterij Analyse klaar: aanbevolen %.1f kWh, netto besparing â¬%.0f/jaar",
         result["recommended_kwh"],
         result["yearly_savings"],
     )
@@ -189,6 +190,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _statistic_id_sort_key(statistic_id: str) -> tuple[str, int]:
+    """Natuurlijke sorteer-key voor statistic-id-varianten.
+
+    'sensor.p1_10' moet na 'sensor.p1_2' sorteren (lexicografisch zou
+    '_10' vóór '_2' komen), zodat bij een ontbrekende exacte ID de
+    nieuwste variant wordt gekozen.
+    """
+    m = re.match(r"^(.+)_(\d+)$", statistic_id)
+    if m:
+        return (m.group(1), int(m.group(2)))
+    return (statistic_id, -1)
+
+
 def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[dict[str, str], list[str]]:
     """Los entity-id's op naar recorder-statistic-id's.
 
@@ -218,7 +232,10 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
         if eid in known_ids:
             resolved[eid] = eid
             continue
-        candidates = sorted(k for k in known_ids if k.startswith(f"{eid}_"))
+        candidates = sorted(
+            (k for k in known_ids if k.startswith(f"{eid}_")),
+            key=_statistic_id_sort_key,
+        )
         if candidates:
             resolved[eid] = candidates[-1]
         else:
@@ -414,7 +431,6 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     for eid, sid in resolved.items():
         series = raw.get(sid, {})
         prev_sum = None
-        prev_ts = None
         d = {}
         resets = 0
         missing = 0
@@ -431,12 +447,11 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
                     delta = 0.0
                 d[ts] = max(0.0, delta)
             prev_sum = s
-            prev_ts = ts
         deltas[eid] = d
         if resets > 5:
             warnings.append(
                 f"Entity {eid}: {resets} x een teruglopende meterstand gevonden "
-                "(sensorreset of vervuilde data). Deze uren zijn genegeerd — "
+                "(sensorreset of vervuilde data). Deze uren zijn genegeerd â "
                 "controleer deze sensor, bijv. op een overflow."
             )
         if missing > len(all_ts) * 0.3:
@@ -658,19 +673,19 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
     table_rows = "\n".join(
         f"| {r['capacity_kwh']} | {r['yearly_saved_kwh']:.0f} | {r['autarkie_pct']} | "
         f"{r['investment_eur']:.0f} | {r['yearly_savings_eur']:.0f} | "
-        f"{r['payback_years'] if r['payback_years'] else '—'} |"
+        f"{r['payback_years'] if r['payback_years'] else 'â'} |"
         for r in results
     )
     warning_block = ""
     if quality.get("warnings"):
         warning_block = (
-            "## ⚠️ Datakwaliteit\n\n"
+            "## â ï¸ Datakwaliteit\n\n"
             + "\n".join(f"- {w}" for w in quality["warnings"])
             + "\n\n"
         )
     max_useful_txt = f"{max_useful} kWh" if max_useful else "geen extra capaciteit levert nog iets op"
     report = (
-        f"# 🔋 Thuisbatterij Analyse\n\n"
+        f"# ð Thuisbatterij Analyse\n\n"
         f"**Geanalyseerde periode:** {days:.0f} dagen "
         f"({datetime.fromtimestamp(first_ts).strftime('%d-%m-%Y')} t/m "
         f"{datetime.fromtimestamp(last_ts).strftime('%d-%m-%Y')})\n\n"
@@ -687,21 +702,21 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         f"- Maximale zinvolle capaciteit: **{max_useful_txt}** "
         f"(boven deze maat levert extra kWh minder dan {MARGINAL_KWH_THRESHOLD:.0f} kWh/jaar op)\n"
         f"- Jaarlijks vermeden afname: **{recommended['yearly_saved_kwh']:.0f} kWh**\n"
-        f"- Netto jaarlijkse besparing: **€{recommended['yearly_savings_eur']:.0f}** "
+        f"- Netto jaarlijkse besparing: **â¬{recommended['yearly_savings_eur']:.0f}** "
         f"(incl. gemiste terugleververgoeding)\n"
         f"- Autarkie daarmee: **{recommended['autarkie_pct']}%**\n"
-        f"- Investeringsindicatie: **€{recommended['investment_eur']:.0f}** "
-        f"(bij €{cost_kwh:.0f}/kWh + €{cost_fixed:.0f} vast)\n"
-        f"- Terugverdientijd: **{recommended['payback_years'] if recommended['payback_years'] else '—'} jaar**\n\n"
+        f"- Investeringsindicatie: **â¬{recommended['investment_eur']:.0f}** "
+        f"(bij â¬{cost_kwh:.0f}/kWh + â¬{cost_fixed:.0f} vast)\n"
+        f"- Terugverdientijd: **{recommended['payback_years'] if recommended['payback_years'] else 'â'} jaar**\n\n"
         f"## Advies zonnepanelen\n"
         + "\n".join(f"- {line}" for line in panel_advice)
         + "\n\n## Simulatie per capaciteit\n\n"
-        f"| Capaciteit (kWh) | Vermeden afname (kWh/jr) | Autarkie % | Investeren (€) | "
-        f"Netto besparing (€/jr) | Terugverdient (jr) |\n|---|---|---|---|---|---|\n"
+        f"| Capaciteit (kWh) | Vermeden afname (kWh/jr) | Autarkie % | Investeren (â¬) | "
+        f"Netto besparing (â¬/jr) | Terugverdient (jr) |\n|---|---|---|---|---|---|\n"
         f"{table_rows}\n\n"
         f"_Aannames: round-trip rendement {efficiency*100:.0f}%, max {max_power:.1f} kW "
-        f"laad/ontlaadvermogen, stroomprijs €{price_import:.2f}/kWh en "
-        f"teruglevertarief €{price_export:.2f}/kWh. "
+        f"laad/ontlaadvermogen, stroomprijs â¬{price_import:.2f}/kWh en "
+        f"teruglevertarief â¬{price_export:.2f}/kWh. "
         f"De batterij laadt alleen uit eigen teruglevering._"
     )
 
@@ -726,3 +741,4 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "panel_advice": panel_advice,
         "report_markdown": report,
     }
+

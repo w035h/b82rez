@@ -153,25 +153,31 @@ def _build_schema(hass: HomeAssistant, defaults: dict | None = None) -> vol.Sche
     )
 
 
+def _validate(user_input: dict | None) -> dict:
+    """Valideer de invoer; retourneert een errors-dict (leeg = geldig)."""
+    errors: dict = {}
+    imp = _as_list((user_input or {}).get(CONF_ENTITIES_IMPORT))
+    exp = _as_list((user_input or {}).get(CONF_ENTITIES_EXPORT))
+    if not imp:
+        errors[CONF_ENTITIES_IMPORT] = "required_import"
+    elif not exp:
+        errors[CONF_ENTITIES_EXPORT] = "required_export"
+    elif set(imp) & set(exp):
+        errors[CONF_ENTITIES_EXPORT] = "overlap"
+    return errors
+
+
 class BatterijAnalyseConfigFlow(config_entries.ConfigFlow, domain="batterij_analyse"):
     """Handle the config flow for Thuisbatterij Analyse."""
 
     VERSION = 2
-    SINGLE_INSTANCE_CLASS = True
 
     async def async_step_user(self, user_input=None):
         """Stap 1: entity's (automatisch voorgesteld) en parameters kiezen."""
         errors = {}
         if user_input is not None:
-            imp = _as_list(user_input.get(CONF_ENTITIES_IMPORT))
-            exp = _as_list(user_input.get(CONF_ENTITIES_EXPORT))
-            if not imp:
-                errors[CONF_ENTITIES_IMPORT] = "required_import"
-            elif not exp:
-                errors[CONF_ENTITIES_EXPORT] = "required_export"
-            elif set(imp) & set(exp):
-                errors[CONF_ENTITIES_EXPORT] = "overlap"
-            else:
+            errors = _validate(user_input)
+            if not errors:
                 return self.async_create_entry(title="Thuisbatterij Analyse", data=user_input)
         try:
             schema = _build_schema(self.hass, user_input if errors else None)
@@ -188,28 +194,23 @@ class BatterijAnalyseConfigFlow(config_entries.ConfigFlow, domain="batterij_anal
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return BatterijAnalyseOptionsFlow(config_entry)
+        return BatterijAnalyseOptionsFlow()
 
 
 class BatterijAnalyseOptionsFlow(config_entries.OptionsFlow):
-    """Allow changing the settings later."""
+    """Allow changing the settings later.
 
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    Home Assistant (>= 2024.12) zet de gekoppelde config entry automatisch
+    als de read-only property `self.config_entry`. Deze mag dus NIET meer
+    handmatig in __init__ worden toegewezen (dat crasht op HA >= 2025.12).
+    """
 
     async def async_step_init(self, user_input=None):
         """Opties aanpassen."""
         errors = {}
         if user_input is not None:
-            imp = _as_list(user_input.get(CONF_ENTITIES_IMPORT))
-            exp = _as_list(user_input.get(CONF_ENTITIES_EXPORT))
-            if not imp:
-                errors[CONF_ENTITIES_IMPORT] = "required_import"
-            elif not exp:
-                errors[CONF_ENTITIES_EXPORT] = "required_export"
-            elif set(imp) & set(exp):
-                errors[CONF_ENTITIES_EXPORT] = "overlap"
-            else:
+            errors = _validate(user_input)
+            if not errors:
                 return self.async_create_entry(title="", data=user_input)
         try:
             schema = _build_schema(
