@@ -1,13 +1,17 @@
 {
   "domain": "batterij_analyse",
   "name": "Thuisbatterij Analyse",
-  "codeowners": ["@33fon"],
+  "codeowners": [
+    "@33fon"
+  ],
   "config_flow": true,
-  "dependencies": ["recorder"],
+  "dependencies": [
+    "recorder"
+  ],
   "documentation": "https://github.com/w035h/b82rez",
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/w035h/b82rez/issues",
   "single_config_entry": true,
-  "version": "3.2.0"
+  "version": "3.2.1"
 }
