@@ -273,6 +273,18 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
             min_start, max_start = session.execute(
                 select(func.min(Statistics.start), func.max(Statistics.start))
             ).one()
+            # Fallback: als de aggregaten ondanks rijen leeg terugkomen,
+            # de eerste/laatste rij direct ophalen.
+            if min_start is None and stat_count:
+                row = session.execute(
+                    select(Statistics.start).order_by(Statistics.start).limit(1)
+                ).one()
+                min_start = row[0] if row else None
+            if max_start is None and stat_count:
+                row = session.execute(
+                    select(Statistics.start).order_by(Statistics.start.desc()).limit(1)
+                ).one()
+                max_start = row[0] if row else None
             top_rows = session.execute(
                 select(StatisticsMeta.statistic_id)
                 .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
@@ -298,14 +310,14 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
                     per_id[stat_id] = {
                         "rows": total,
                         "rows_with_sum": with_sum,
-                        "first": str(first_start),
-                        "last": str(last_start),
+                        "first": str(first_start) if first_start is not None else None,
+                        "last": str(last_start) if last_start is not None else None,
                     }
             diag = {
                 "statistics_rows": stat_count,
                 "statistics_meta_rows": meta_count,
-                "min_start": str(min_start),
-                "max_start": str(max_start),
+                "min_start": str(min_start) if min_start is not None else None,
+                "max_start": str(max_start) if max_start is not None else None,
                 "top_ids": [row[0] for row in top_rows],
                 "per_statistic_id": per_id,
             }
@@ -314,6 +326,35 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
     except Exception:  # noqa: BLE001 - diagnose mag de fout nooit verergeren
         _LOGGER.exception("Recorder-diagnose mislukt")
     return diag
+
+
+def _suggest_energy_meters(hass: HomeAssistant, limit: int = 10) -> list[str]:
+    """Energiemeters (kWh) die nu een stand rapporteren én statistieken
+    hebben — als suggestie bij een mislukte analyse, zodat direct
+    zichtbaar is welke meters wél bruikbaar zijn."""
+    from homeassistant.components.recorder.statistics import list_statistic_ids
+
+    states = getattr(hass, "states", None)
+    if states is None:
+        return []
+    try:
+        all_stats = list_statistic_ids(hass) or []
+    except Exception:  # noqa: BLE001
+        return []
+    found = []
+    for item in all_stats:
+        sid = item["statistic_id"] if isinstance(item, dict) else item
+        state = states.get(sid)
+        if state is None:
+            continue
+        if str(state.state).lower() in ("unavailable", "unknown", "none"):
+            continue
+        if state.attributes.get("device_class") != "energy":
+            continue
+        if state.attributes.get("unit_of_measurement") != "kWh":
+            continue
+        found.append(sid)
+    return sorted(found)[:limit]
 
 
 def _entity_state_info(hass: HomeAssistant, entity_ids: list[str]) -> dict[str, dict]:
@@ -459,8 +500,11 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         unavailable = sorted(
             eid
             for eid, inf in state_info.items()
-            if not inf.get("exists")
-            or str(inf.get("state")).lower() in ("unavailable", "unknown", "none")
+            if inf.get("exists")
+            and str(inf.get("state")).lower() in ("unavailable", "unknown", "none")
+        )
+        not_exists = sorted(
+            eid for eid, inf in state_info.items() if not inf.get("exists")
         )
         only_null_sums = sorted(
             stat_id
@@ -473,13 +517,41 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
             if inf.get("exists")
             and inf.get("state_class") not in ("total_increasing", "total")
         )
+        # Lijkt een gekozen entity hernoemd? Zoek op varianten
+        # (bijv. sensor.xxx_2 na een unit- of state_class-wijziging).
+        suggestions: dict[str, list[str]] = {}
+        states = getattr(hass, "states", None)
+        for eid in not_exists:
+            if states is None:
+                break
+            suggestions[eid] = sorted(
+                st.entity_id
+                for st in states.async_all()
+                if st.entity_id.startswith(eid + "_")
+            )[:3]
+        per_id = diag.get("per_statistic_id", {})
+
         findings = []
         if unavailable:
             findings.append(
-                "Deze gekozen entity's bestaan niet (meer) of staan nu op "
-                "'unavailable'/'unknown': " + ", ".join(unavailable)
-                + ". Een meter bouwt alleen statistieken op als hij een "
-                "numerieke kWh-stand rapporteert."
+                "Deze gekozen entity's staan nu op 'unavailable'/'unknown': "
+                + ", ".join(unavailable)
+                + ". De bijbehorende integratie of gateway levert op dit "
+                "moment geen stand; een meter bouwt alleen statistieken op "
+                "zolang hij een numerieke kWh-stand rapporteert."
+            )
+        if not_exists:
+            parts = []
+            for eid in not_exists:
+                txt = eid
+                if suggestions.get(eid):
+                    txt += " (lijkt op: " + ", ".join(suggestions[eid]) + ")"
+                parts.append(txt)
+            findings.append(
+                "Deze gekozen entity's bestaan niet (meer): "
+                + ", ".join(parts)
+                + ". Waarschijnlijk zijn ze hernoemd of verwijderd; kies in "
+                "de instellingen de huidige entity's."
             )
         if only_null_sums:
             findings.append(
@@ -496,22 +568,42 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
                 "of 'total' (vereist voor lange-termijnstatistieken): "
                 + ", ".join(no_state_class) + "."
             )
+        meter_facts = []
+        for stat_id in ids:
+            inf = per_id.get(stat_id)
+            if inf is None:
+                meter_facts.append(f"{stat_id}: geen enkele rij in statistics")
+            else:
+                meter_facts.append(
+                    f"{stat_id}: {inf['rows']} rij(en), waarvan "
+                    f"{inf['rows_with_sum']} met een waarde, periode "
+                    f"{inf['first'] or 'onbekend'} t/m {inf['last'] or 'onbekend'}"
+                )
+        findings.append(
+            "Per meter in de recorder-database: " + "; ".join(meter_facts) + "."
+        )
         findings.append(
             "Recorder-diagnose: statistics-tabel bevat "
             + str(diag.get("statistics_rows", "onbekend"))
             + " rijen over "
             + str(diag.get("statistics_meta_rows", "onbekend"))
             + " meters, periode "
-            + str(diag.get("min_start"))
+            + (diag.get("min_start") or "onbekend")
             + " t/m "
-            + str(diag.get("max_start"))
-            + ". Statistic-id's met de meeste data: "
-            + (", ".join(diag.get("top_ids") or []) or "geen enkele")
+            + (diag.get("max_start") or "onbekend")
             + ". Controleer ook een eventuele 'recorder: exclude:' in "
             "configuration.yaml en de waarschuwingen bij Developer Tools -> "
             "Statistics (gebruik daar 'Fix' na een unit- of state_class-"
             "wijziging)."
         )
+        usable = _suggest_energy_meters(hass)
+        if usable:
+            findings.append(
+                "Deze energiemeters (kWh) bestaan wel, rapporteren een stand "
+                "en hebben statistieken: " + ", ".join(usable)
+                + ". Overweeg hiervan de juiste meters te kiezen in de "
+                "instellingen."
+            )
         return [], None, None, {
             "warnings": [],
             "missing_entities": missing_ents,
