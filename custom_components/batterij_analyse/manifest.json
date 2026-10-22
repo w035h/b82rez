@@ -13,5 +13,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/w035h/b82rez/issues",
   "single_config_entry": true,
-  "version": "3.2.3"
+  "version": "3.2.4"
 }

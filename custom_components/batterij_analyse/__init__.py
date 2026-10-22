@@ -243,6 +243,52 @@ def _resolve_statistic_ids(hass: HomeAssistant, entity_ids: list[str]) -> tuple[
     return resolved, missing
 
 
+def _statistics_start_col(table):
+    """Kolom met de start-tijd van een statistics-tabel.
+
+    Home Assistant slaat sinds de recorder-schema-migratie (2025.7) de
+    tijden op als integer 'start_ts' (epoch in microseconden) en laat
+    de oude datetime-kolom 'start' leeg. Oudere versies gebruiken alleen
+    'start'. Deze helper kiest de kolom die daadwerkelijk data bevat.
+    """
+    start_ts = getattr(table, "start_ts", None)
+    if start_ts is not None:
+        return start_ts
+    return table.start
+
+
+def _start_to_ts(value) -> float | None:
+    """Zet een start-waarde om naar een unix-timestamp in seconden.
+
+    Ondersteunt datetime-objecten (oude HA) en integers/floats: epoch in
+    seconden, milliseconden of microseconden (nieuwe HA start_ts).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        if v > 1e14:  # microseconden (moderne HA start_ts)
+            return v / 1e6
+        if v > 1e11:  # milliseconden
+            return v / 1e3
+        return v  # seconden
+    try:
+        return value.timestamp()
+    except (AttributeError, ValueError, OSError, TypeError):
+        return None
+
+
+def _fmt_start(value) -> str | None:
+    """Leesbare weergave van een start-waarde (voor in foutmeldingen)."""
+    ts = _start_to_ts(value)
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts).strftime("%d-%m-%Y %H:%M")
+    except (ValueError, OSError, OverflowError):
+        return str(value)
+
+
 def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
     """Diagnostiek over de recorder-statistieken (alleen in het foutpad,
     dus pas wanneer er sowieso al iets mis is).
@@ -264,6 +310,7 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
         instance = get_instance(hass)
         session = instance.get_session()
         try:
+            start_col = _statistics_start_col(Statistics)
             stat_count = (
                 session.execute(select(func.count(Statistics.id))).scalar() or 0
             )
@@ -271,18 +318,18 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
                 session.execute(select(func.count(StatisticsMeta.id))).scalar() or 0
             )
             min_start, max_start = session.execute(
-                select(func.min(Statistics.start), func.max(Statistics.start))
+                select(func.min(start_col), func.max(start_col))
             ).one()
             # Fallback: als de aggregaten ondanks rijen leeg terugkomen,
             # de eerste/laatste rij direct ophalen.
             if min_start is None and stat_count:
                 row = session.execute(
-                    select(Statistics.start).order_by(Statistics.start).limit(1)
+                    select(start_col).order_by(start_col).limit(1)
                 ).one()
                 min_start = row[0] if row else None
             if max_start is None and stat_count:
                 row = session.execute(
-                    select(Statistics.start).order_by(Statistics.start.desc()).limit(1)
+                    select(start_col).order_by(start_col.desc()).limit(1)
                 ).one()
                 max_start = row[0] if row else None
             top_rows = session.execute(
@@ -299,8 +346,8 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
                         StatisticsMeta.statistic_id,
                         func.count(Statistics.id),
                         func.count(Statistics.sum),
-                        func.min(Statistics.start),
-                        func.max(Statistics.start),
+                        func.min(start_col),
+                        func.max(start_col),
                     )
                     .join(Statistics, Statistics.metadata_id == StatisticsMeta.id)
                     .where(StatisticsMeta.statistic_id.in_(ids))
@@ -310,14 +357,14 @@ def _recorder_diagnose(hass: HomeAssistant, ids: list[str]) -> dict:
                     per_id[stat_id] = {
                         "rows": total,
                         "rows_with_sum": with_sum,
-                        "first": str(first_start) if first_start is not None else None,
-                        "last": str(last_start) if last_start is not None else None,
+                        "first": _fmt_start(first_start),
+                        "last": _fmt_start(last_start),
                     }
             diag = {
                 "statistics_rows": stat_count,
                 "statistics_meta_rows": meta_count,
-                "min_start": str(min_start) if min_start is not None else None,
-                "max_start": str(max_start) if max_start is not None else None,
+                "min_start": _fmt_start(min_start),
+                "max_start": _fmt_start(max_start),
                 "top_ids": [row[0] for row in top_rows],
                 "per_statistic_id": per_id,
             }
@@ -423,6 +470,7 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     instance = get_instance(hass)
     session = instance.get_session()
     try:
+        start_col = _statistics_start_col(Statistics)
         meta_rows = session.execute(
             select(StatisticsMeta.id, StatisticsMeta.statistic_id).where(
                 StatisticsMeta.statistic_id.in_(ids)
@@ -442,10 +490,10 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         stat_rows = session.execute(
             select(
                 Statistics.metadata_id,
-                Statistics.start,
+                start_col,
                 Statistics.sum,
             ).where(Statistics.metadata_id.in_(id_to_name))
-            .order_by(Statistics.start)
+            .order_by(start_col)
         ).all()
         _LOGGER.debug(
             "%d statistics-rijen opgehaald voor %d meters",
@@ -455,13 +503,14 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         if not stat_rows:
             # Lange-termijnstatistieken leeg: val terug op de
             # korte-termijnstatistieken (max ca. 10 dagen, 5-min resolutie).
+            short_start_col = _statistics_start_col(StatisticsShortTerm)
             short_rows = session.execute(
                 select(
                     StatisticsShortTerm.metadata_id,
-                    StatisticsShortTerm.start,
+                    short_start_col,
                     StatisticsShortTerm.sum,
                 ).where(StatisticsShortTerm.metadata_id.in_(id_to_name))
-                .order_by(StatisticsShortTerm.start)
+                .order_by(short_start_col)
             ).all()
             _LOGGER.debug(
                 "Lange-termijnstatistieken leeg; fallback op korte-termijn: %d rijen",
@@ -473,13 +522,12 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
     # 2) Cumulatieve standen per statistic-id, op tijdstip
     def _rows_to_raw(rows) -> dict[str, dict[float, float]]:
         data: dict[str, dict[float, float]] = {name: {} for name in ids}
-        for meta_id, start_dt, sum_val in rows:
+        for meta_id, start_val, sum_val in rows:
             name = id_to_name.get(meta_id)
             if name is None or sum_val is None:
                 continue
-            try:
-                ts = start_dt.timestamp()
-            except (AttributeError, ValueError, OSError):
+            ts = _start_to_ts(start_val)
+            if ts is None:
                 continue
             data[name][ts] = float(sum_val)
         return data
