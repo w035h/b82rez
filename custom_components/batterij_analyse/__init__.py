@@ -636,6 +636,20 @@ def _fetch_hourly_kwh(hass: HomeAssistant, groups: dict[str, list[str]]):
         warnings.append(
             "Geen statistieken voor (genegeerd): " + ", ".join(missing_ents)
         )
+    for eid, sid in resolved.items():
+        if hass.states.get(eid) is not None:
+            continue
+        # Entity bestaat niet meer als sensor (verwijderd apparaat),
+        # maar heeft wel historie in de recorder: meegenomen in de
+        # analyse, met vermelding tot wanneer de data loopt.
+        last_data = max(raw.get(sid, {}), default=None)
+        if last_data is not None:
+            warnings.append(
+                f"Entity {eid} bestaat niet meer als sensor; de historische "
+                f"statistieken t/m "
+                f"{datetime.fromtimestamp(last_data).strftime('%d-%m-%Y')} "
+                "zijn wel meegenomen in de analyse."
+            )
     deltas: dict[str, dict[float, float]] = {}
     for eid, sid in resolved.items():
         series = raw.get(sid, {})

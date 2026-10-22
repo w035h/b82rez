@@ -80,8 +80,66 @@ def _as_list(value) -> list[str]:
     return [v for v in value if v]
 
 
-def _build_schema(hass: HomeAssistant, defaults: dict | None = None) -> vol.Schema:
-    """Bouw het formulier-schema met automatisch gedetecteerde defaults."""
+def _statistic_energy_entities(hass: HomeAssistant) -> list[str]:
+    """Entity-id's die energie-statistieken in de recorder hebben.
+
+    Bevat ook entiteiten die niet meer bestaan (bijv. een vervangen of
+    verwijderde P1-lezer), zolang hun historie nog in de statistics-tabel
+    staat. Zo'n meter kan in de instellingen gekozen worden en de analyse
+    gebruikt dan de bewaarde historie. Synchrone DB-toegang: aanroepen
+    via hass.async_add_executor_job.
+    """
+    try:
+        from homeassistant.components.recorder.statistics import list_statistic_ids
+
+        all_stats = list_statistic_ids(hass) or []
+    except Exception:  # noqa: BLE001 - flow mag nooit crashen
+        _LOGGER.exception("Fout bij ophalen van statistic-id's")
+        return []
+
+    found: list[str] = []
+    for item in all_stats:
+        sid = item["statistic_id"] if isinstance(item, dict) else item
+        if not isinstance(sid, str) or not sid.startswith("sensor."):
+            continue
+        state = hass.states.get(sid)
+        if state is not None:
+            # Bestaande sensor: alleen energie-meters aanbieden
+            if state.attributes.get("device_class") == "energy":
+                found.append(sid)
+            continue
+        if not isinstance(item, dict):
+            # Alleen een kale ID (oude HA-versie): geen unit bekend,
+            # dan maar niet aanbieden i.p.v. risico op valse keuzes.
+            continue
+        if item.get("has_sum") is False:
+            continue  # alleen gemiddelden, geen totaalteller
+        state_class = item.get("state_class")
+        if state_class is not None and state_class not in ("total", "total_increasing"):
+            continue
+        unit = str(
+            item.get("statistics_unit_of_measurement")
+            or item.get("unit_of_measurement")
+            or item.get("unit")
+            or item.get("display_unit_of_measurement")
+            or ""
+        ).upper()
+        if unit in ("WH", "KWH", "MWH", "GWH"):
+            found.append(sid)
+    return sorted(set(found))
+
+
+def _build_schema(
+    hass: HomeAssistant,
+    defaults: dict | None = None,
+    statistic_entities: list[str] | None = None,
+) -> vol.Schema:
+    """Bouw het formulier-schema met automatisch gedetecteerde defaults.
+
+    `statistic_entities` zijn entiteiten met recorder-statistieken
+    (inclusief verwijderde meters); die worden aan de kiezers toegevoegd
+    zodat ook historie van een vervangen P1-lezer gekozen kan worden.
+    """
     d = defaults or {}
     det_imp, det_exp, det_sol = _discover_energy_entities(hass)
 
@@ -90,7 +148,12 @@ def _build_schema(hass: HomeAssistant, defaults: dict | None = None) -> vol.Sche
         return stored if stored else detected
 
     energy_multi = selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor", device_class="energy", multiple=True)
+        selector.EntitySelectorConfig(
+            domain="sensor",
+            device_class="energy",
+            multiple=True,
+            include_entities=list(statistic_entities or []),
+        )
     )
 
     return vol.Schema(
@@ -180,7 +243,16 @@ class BatterijAnalyseConfigFlow(config_entries.ConfigFlow, domain="batterij_anal
             if not errors:
                 return self.async_create_entry(title="Thuisbatterij Analyse", data=user_input)
         try:
-            schema = _build_schema(self.hass, user_input if errors else None)
+            stat_entities = await self.hass.async_add_executor_job(
+                _statistic_energy_entities, self.hass
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Fout bij ophalen statistic-id's in de config flow")
+            stat_entities = []
+        try:
+            schema = _build_schema(
+                self.hass, user_input if errors else None, stat_entities
+            )
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Fout bij bouwen van config-flow schema")
             schema = vol.Schema({})
@@ -213,9 +285,17 @@ class BatterijAnalyseOptionsFlow(config_entries.OptionsFlow):
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
         try:
+            stat_entities = await self.hass.async_add_executor_job(
+                _statistic_energy_entities, self.hass
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Fout bij ophalen statistic-id's in de options flow")
+            stat_entities = []
+        try:
             schema = _build_schema(
                 self.hass,
                 {**self.config_entry.data, **(self.config_entry.options or {})},
+                stat_entities,
             )
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Fout bij bouwen van options-flow schema")
