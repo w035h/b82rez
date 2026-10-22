@@ -9,12 +9,15 @@
           "entities_export": "Teruglevering aan het net (kWh-meters)",
           "entities_solar": "Zonnepanelen productie (kWh-meters, optioneel)",
           "price_import": "Stroomprijs (€/kWh)",
-          "price_export": "Teruglevertarief (€/kWh)",
+          "price_export": "Effectief teruglevertarief (€/kWh)",
           "battery_cost_kwh": "Batterijkosten per kWh geïnstalleerd (€/kWh)",
           "battery_cost_fixed": "Vaste installatiekosten (€)",
           "battery_efficiency": "Round-trip rendement batterij (%)",
           "battery_max_power_kw": "Max laad/ontlaadvermogen (kW)",
           "max_capacity": "Maximale te simuleren capaciteit (kWh)"
+        },
+        "data_description": {
+          "price_export": "Netto vergoeding per teruggeleverde kWh. Betaal je per kWh terugleverkosten (nieuwere contracten, of na het stoppen van saldering per 2027)? Vul dan een negatief bedrag in, bijv. -0.07: de batterij bespaart dan ook die kosten voor elke opgeslagen kWh."
         }
       }
     },
@@ -37,12 +40,15 @@
           "entities_export": "Teruglevering aan het net (kWh-meters)",
           "entities_solar": "Zonnepanelen productie (kWh-meters, optioneel)",
           "price_import": "Stroomprijs (€/kWh)",
-          "price_export": "Teruglevertarief (€/kWh)",
+          "price_export": "Effectief teruglevertarief (€/kWh)",
           "battery_cost_kwh": "Batterijkosten per kWh geïnstalleerd (€/kWh)",
           "battery_cost_fixed": "Vaste installatiekosten (€)",
           "battery_efficiency": "Round-trip rendement batterij (%)",
           "battery_max_power_kw": "Max laad/ontlaadvermogen (kW)",
           "max_capacity": "Maximale te simuleren capaciteit (kWh)"
+        },
+        "data_description": {
+          "price_export": "Netto vergoeding per teruggeleverde kWh. Negatief invullen als je per kWh terugleverkosten betaalt, bijv. -0.07."
         }
       }
     },

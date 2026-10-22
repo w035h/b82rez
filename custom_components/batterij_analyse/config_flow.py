@@ -180,7 +180,7 @@ def _build_schema(
                 CONF_PRICE_EXPORT,
                 default=d.get(CONF_PRICE_EXPORT, DEFAULT_PRICE_EXPORT),
             ): selector.NumberSelector(
-                selector.NumberSelectorConfig(min=0.0, max=2.0, step=0.01)
+                selector.NumberSelectorConfig(min=-1.0, max=2.0, step=0.01)
             ),
             vol.Required(
                 CONF_BATTERY_COST_KWH,

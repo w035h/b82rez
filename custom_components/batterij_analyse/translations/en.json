@@ -9,12 +9,15 @@
           "entities_export": "Grid feed-in (kWh meters)",
           "entities_solar": "Solar production (kWh meters, optional)",
           "price_import": "Electricity price (€/kWh)",
-          "price_export": "Feed-in tariff (€/kWh)",
+          "price_export": "Effective feed-in tariff (€/kWh)",
           "battery_cost_kwh": "Battery cost per installed kWh (€/kWh)",
           "battery_cost_fixed": "Fixed installation cost (€)",
           "battery_efficiency": "Battery round-trip efficiency (%)",
           "battery_max_power_kw": "Max charge/discharge power (kW)",
           "max_capacity": "Maximum simulated capacity (kWh)"
+        },
+        "data_description": {
+          "price_export": "Net compensation per fed-in kWh. If you pay feed-in costs per kWh (newer contracts, or once net metering ends in 2027), enter a negative value, e.g. -0.07: the battery then also saves those costs for every stored kWh."
         }
       }
     },
@@ -37,12 +40,15 @@
           "entities_export": "Grid feed-in (kWh meters)",
           "entities_solar": "Solar production (kWh meters, optional)",
           "price_import": "Electricity price (€/kWh)",
-          "price_export": "Feed-in tariff (€/kWh)",
+          "price_export": "Effective feed-in tariff (€/kWh)",
           "battery_cost_kwh": "Battery cost per installed kWh (€/kWh)",
           "battery_cost_fixed": "Fixed installation cost (€)",
           "battery_efficiency": "Battery round-trip efficiency (%)",
           "battery_max_power_kw": "Max charge/discharge power (kW)",
           "max_capacity": "Maximum simulated capacity (kWh)"
+        },
+        "data_description": {
+          "price_export": "Net compensation per fed-in kWh. Enter a negative value if you pay feed-in costs per kWh, e.g. -0.07."
         }
       }
     },

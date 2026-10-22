@@ -955,6 +955,13 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
             + "\n\n"
         )
     max_useful_txt = f"{max_useful} kWh" if max_useful else "geen extra capaciteit levert nog iets op"
+    export_note = ""
+    if price_export < 0:
+        export_note = (
+            f" Je teruglevertarief is negatief (terugleverkosten van "
+            f"€{abs(price_export):.2f}/kWh): elke kWh die de batterij opslaat "
+            "voorkomt die kosten en telt daardoor extra door in de besparing."
+        )
     report = (
         f"# 🔋 Thuisbatterij Analyse\n\n"
         f"**Geanalyseerde periode:** {days:.0f} dagen "
@@ -989,6 +996,7 @@ async def async_run_analysis(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         f"laad/ontlaadvermogen, stroomprijs €{price_import:.2f}/kWh en "
         f"teruglevertarief €{price_export:.2f}/kWh. "
         f"De batterij laadt alleen uit eigen teruglevering._"
+        + export_note
     )
 
     return {
